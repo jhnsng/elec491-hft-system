@@ -34,18 +34,12 @@ We use **component-based long-lived branches** along with a protected `main` bra
 git checkout main
 git pull
 
-yaml
-Copy code
-
 ---
 
 ### Step 2 — Switch to your component branch
 
 git checkout orderbook # replace with your branch
 git merge main
-
-yaml
-Copy code
 
 ---
 
@@ -56,8 +50,6 @@ Edit files in the appropriate subdirectories. For example:
 hw/orderbook/src/rtl/
 hw/orderbook/src/tb/
 
-yaml
-Copy code
 
 ---
 
@@ -66,17 +58,12 @@ Copy code
 git add hw/orderbook/src/rtl
 git commit -m "Orderbook: add price-level comparator"
 
-yaml
-Copy code
-
 ---
 
 ### Step 5 — Push your branch
 
 git push origin orderbook
 
-yaml
-Copy code
 
 ---
 
