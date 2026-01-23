@@ -31,21 +31,15 @@ We use **component-based long-lived branches** along with a protected `main` bra
 
 ### Step 1 — Sync with main
 
-git checkout main
-git pull
-
-yaml
-Copy code
+`git checkout main`
+`git pull`
 
 ---
 
 ### Step 2 — Switch to your component branch
 
-git checkout orderbook # replace with your branch
-git merge main
-
-yaml
-Copy code
+`git checkout orderbook # replace with your branch`
+`git merge main`
 
 ---
 
@@ -53,30 +47,23 @@ Copy code
 
 Edit files in the appropriate subdirectories. For example:
 
-hw/orderbook/src/rtl/
-hw/orderbook/src/tb/
+`hw/orderbook/src/rtl/`
+`hw/orderbook/src/tb/`
 
-yaml
-Copy code
 
 ---
 
 ### Step 4 — Commit your changes
 
-git add hw/orderbook/src/rtl
-git commit -m "Orderbook: add price-level comparator"
-
-yaml
-Copy code
+`git add hw/orderbook/src/rtl`
+`git commit -m "Orderbook: add price-level comparator"`
 
 ---
 
 ### Step 5 — Push your branch
 
-git push origin orderbook
+`git push origin orderbook`
 
-yaml
-Copy code
 
 ---
 
