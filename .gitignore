@@ -20,6 +20,7 @@ Thumbs.db
 **/quartus/incremental_db/
 **/quartus/output_files/
 **/quartus/simulation/
+**/quartus/*.sof
 
 # Qsys temporary / generated state
 **/quartus/.qsys_edit/

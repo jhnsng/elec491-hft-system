@@ -91,6 +91,7 @@ Avoid committing generated/build files:
 - Simulation output: `sim/modelsim/work/`
 - Generated IP: `.sopcinfo`, `.rpt`, `.csv`
 - Other temporary files: `.log`, `.bak`, `.tmp`
+- Only commit `.qsf` if you meant to change it. Even if you only compile/program in Quartus, it may modify your qsf with some junk. Check your changes in VSCode Diff (or other diff tool).
 
 Only commit source files, constraints, scripts, and `.qsys` or `.tcl` inputs.
 
