@@ -1,6 +1,6 @@
 module orderbook #(
     parameter BUFFER_SIZE = 512,
-    parameter LIMIT_DOWN_PRICE = 29479, // 279.43, opening price 299.91
+    parameter LIMIT_DOWN_PRICE = 29785, // 297.85, opening price 299.91
     parameter PRICE_WIDTH = 32,
     parameter QTY_WIDTH = 32
 )(
