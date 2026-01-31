@@ -1,58 +1,61 @@
-import sys
 import socket
+import struct
 import time
 
-DE1_IP = "192.168.1.123"
+DE1_IP   = "192.168.1.123"
 DE1_PORT = 12345
 
-# ITCH v5.0 message lengths (bytes), including the 1-byte message type.
-MESSAGE_LENGTHS = {
-    "S": 12,   # System Event
-    "R": 39,   # Stock Directory
-    "A": 36,   # Add Order - No MPID Attribution
-    "F": 40,   # Add Order - With MPID Attribution
-    "E": 31,   # Order Executed
-    "C": 36,   # Order Executed With Price
-    "X": 23,   # Order Cancel
-    "D": 19,   # Order Delete
-    "U": 35,   # Order Replace
-    "P": 44,   # Trade (Non-Cross)
-}
+def itch_add(order_id, side, quantity, price):
+    msg = bytearray(36)
+    msg[0] = ord('A')
+    msg[1:11] = b'\x00' * 10
+    msg[11:19] = struct.pack(">Q", order_id)
+    msg[19]    = ord('S') if side == 'S' else ord('B')
+    msg[20:24] = struct.pack(">I", quantity)
+    msg[24:32] = b'TEST    '
+    msg[32:36] = struct.pack(">I", price)
+    return bytes(msg)
 
-def build_itch_message(msg_type):
-    total_len = MESSAGE_LENGTHS[msg_type]
-    payload_len = total_len - 1
+def itch_execute(order_id, exec_qty):
+    msg = bytearray(31)
+    msg[0] = ord('E')
+    msg[1:11] = b'\x00' * 10
+    msg[11:19] = struct.pack(">Q", order_id)
+    msg[19:23] = struct.pack(">I", exec_qty)
+    msg[23:31] = b'\x00' * 8
+    return bytes(msg)
 
-    # Dummy payload: 0x01, 0x02, ...
-    payload = bytes((i % 256 for i in range(1, payload_len + 1)))
-    return bytes([ord(msg_type)]) + payload
+def itch_cancel(order_id, cancel_qty):
+    msg = bytearray(23)
+    msg[0] = ord('X')
+    msg[1:11] = b'\x00' * 10
+    msg[11:19] = struct.pack(">Q", order_id)
+    msg[19:23] = struct.pack(">I", cancel_qty)
+    return bytes(msg)
 
 def main():
-    if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <ITCH type 1> [ITCH type 2] [ITCH type 3] ...")
-        print(f"Supported types: {', '.join(sorted(MESSAGE_LENGTHS.keys()))}")
-        sys.exit(1)
-
-    msg_types = sys.argv[1:]
-
-    for t in msg_types:
-        if len(t) != 1 or t not in MESSAGE_LENGTHS:
-            print(f"Error: unsupported ITCH message type '{t}'")
-            sys.exit(1)
-
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    order_id = 123456789
+    price    = 402500
+    qty      = 100
 
-    for t in msg_types:
-        msg = build_itch_message(t)
-        sock.sendto(msg, (DE1_IP, DE1_PORT))
-        print(f"Sent ITCH '{t}' ({len(msg)} bytes)")
+    total_msgs = 100
 
-        # Optional: tiny delay for readability/debugging
-        # Comment this out if you want them *really* back-to-back
+    # Send repeated A→E→X sequences
+    for i in range(total_msgs):
+        add = itch_add(order_id, 'B', qty, price)
+        exe = itch_execute(order_id, 40)
+        can = itch_cancel(order_id, 60)
+
+        sock.sendto(add, (DE1_IP, DE1_PORT))
+        sock.sendto(exe, (DE1_IP, DE1_PORT))
+        sock.sendto(can, (DE1_IP, DE1_PORT))
+
+        # Optional small delay if needed
         # time.sleep(0.001)
 
     sock.close()
-    print("Done.")
+    print(f"Sent {total_msgs*3} ITCH messages (A→E→X sequences)")
 
 if __name__ == "__main__":
     main()
