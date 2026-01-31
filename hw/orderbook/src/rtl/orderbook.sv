@@ -1,8 +1,11 @@
+import _pkg::*;
+
 module orderbook #(
-    parameter BUFFER_SIZE = 512,
-    parameter LIMIT_DOWN_PRICE = 29785, // 297.85, opening price 299.91
+    parameter BUFFER_SIZE = 4096,  // Now supports 4096 entries using M10K blocks
+    parameter LIMIT_DOWN_PRICE = 27963, // 279.63, opening price 299.91
     parameter PRICE_WIDTH = 32,
-    parameter QTY_WIDTH = 32
+    parameter QTY_WIDTH = 32,
+    parameter NUM_M10K_BLOCKS = BUFFER_SIZE / 256  // Number of M10K blocks needed
 )(
     input  logic                     clk,
     input  logic                     rst_n,
@@ -22,8 +25,6 @@ module orderbook #(
     output logic                     best_ask_valid
 );
 
-    import _pkg::*;
-
     logic [PRICE_WIDTH-1:0] buffer_index;
     always_comb begin
         buffer_index = (price_in - LIMIT_DOWN_PRICE);
@@ -34,8 +35,56 @@ module orderbook #(
         logic                   valid;
     } entry_t;
 
-    entry_t bid_buffer [0:BUFFER_SIZE-1];
-    entry_t ask_buffer [0:BUFFER_SIZE-1];
+    // M10K memory interface signals (40-bit width for 33-bit entry_t)
+    logic [39:0] bid_m10k_write_data [0:NUM_M10K_BLOCKS-1];
+    logic [39:0] bid_m10k_read_data [0:NUM_M10K_BLOCKS-1];
+    logic [39:0] ask_m10k_write_data [0:NUM_M10K_BLOCKS-1];
+    logic [39:0] ask_m10k_read_data [0:NUM_M10K_BLOCKS-1];
+    logic [7:0] bid_m10k_write_addr [0:NUM_M10K_BLOCKS-1];
+    logic [7:0] bid_m10k_read_addr [0:NUM_M10K_BLOCKS-1];
+    logic [7:0] ask_m10k_write_addr [0:NUM_M10K_BLOCKS-1];
+    logic [7:0] ask_m10k_read_addr [0:NUM_M10K_BLOCKS-1];
+    logic bid_m10k_we [0:NUM_M10K_BLOCKS-1];
+    logic ask_m10k_we [0:NUM_M10K_BLOCKS-1];
+    
+    // Address decoding: upper bits select M10K block, lower 8 bits address within block
+    localparam ADDR_MSB = $clog2(NUM_M10K_BLOCKS) + 7;  // Total address width
+    logic [$clog2(NUM_M10K_BLOCKS)-1:0] write_block_sel;
+    logic [7:0] write_block_addr;
+    
+    assign write_block_sel = buffer_index[ADDR_MSB:8];
+    assign write_block_addr = buffer_index[7:0];
+    
+    // Instantiate M10K blocks for bid buffer
+    genvar blk;
+    generate
+        for (blk = 0; blk < NUM_M10K_BLOCKS; blk++) begin : gen_bid_m10k
+            M10K_256_40 bid_m10k (
+                .q(bid_m10k_read_data[blk]),
+                .d(bid_m10k_write_data[blk]),
+                .write_address(bid_m10k_write_addr[blk]),
+                .read_address(bid_m10k_read_addr[blk]),
+                .we(bid_m10k_we[blk]),
+                .clk(clk)
+            );
+        end
+        
+        // Instantiate M10K blocks for ask buffer
+        for (blk = 0; blk < NUM_M10K_BLOCKS; blk++) begin : gen_ask_m10k
+            M10K_256_40 ask_m10k (
+                .q(ask_m10k_read_data[blk]),
+                .d(ask_m10k_write_data[blk]),
+                .write_address(ask_m10k_write_addr[blk]),
+                .read_address(ask_m10k_read_addr[blk]),
+                .we(ask_m10k_we[blk]),
+                .clk(clk)
+            );
+        end
+    endgenerate
+    
+    // Buffer read data (registered for 2-cycle read latency)
+    entry_t bid_buffer_read_q [0:BUFFER_SIZE-1];
+    entry_t ask_buffer_read_q [0:BUFFER_SIZE-1];
     
     // Calculate number of reduction stages needed
     localparam NUM_STAGES = $clog2(BUFFER_SIZE);
@@ -54,28 +103,63 @@ module orderbook #(
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             valid_out <= 1'b0;
-            for (int i = 0; i < BUFFER_SIZE; i++) begin
-                bid_buffer[i].valid <= '0;
-                bid_buffer[i].qty <= '0;
-                ask_buffer[i].valid <= '0;
-                ask_buffer[i].qty <= '0;
+            // Initialize M10K control signals
+            for (int i = 0; i < NUM_M10K_BLOCKS; i++) begin
+                bid_m10k_we[i] <= 1'b0;
+                ask_m10k_we[i] <= 1'b0;
+                bid_m10k_write_data[i] <= '0;
+                ask_m10k_write_data[i] <= '0;
+                bid_m10k_write_addr[i] <= '0;
+                ask_m10k_write_addr[i] <= '0;
             end
         end else begin
             valid_out <= 1'b0;
-            if (!side_in) begin
-                bid_buffer[buffer_index].qty <= bid_buffer[buffer_index].qty + delta_qty_in;
-                if (bid_buffer[buffer_index].qty + delta_qty_in <= '0) begin
-                    bid_buffer[buffer_index].valid <= 1'b0;
-                end else begin
-                    bid_buffer[buffer_index].valid <= 1'b1;
+            
+            // Default: disable all write enables
+            for (int i = 0; i < NUM_M10K_BLOCKS; i++) begin
+                bid_m10k_we[i] <= 1'b0;
+                ask_m10k_we[i] <= 1'b0;
+            end
+            
+            if (valid_in) begin
+                if (!side_in) begin  // Bid
+                    // Read-modify-write: need to read current value first
+                    // For now, simplified approach - will need state machine for RMW
+                    entry_t current_entry;
+                    current_entry.qty = bid_buffer_read_q[buffer_index].qty + delta_qty_in;
+                    current_entry.valid = (current_entry.qty > 0);
+                    
+                    bid_m10k_write_data[write_block_sel] <= {7'b0, current_entry};  // Pad to 40 bits
+                    bid_m10k_write_addr[write_block_sel] <= write_block_addr;
+                    bid_m10k_we[write_block_sel] <= 1'b1;
+                end else begin  // Ask
+                    entry_t current_entry;
+                    current_entry.qty = ask_buffer_read_q[buffer_index].qty + delta_qty_in;
+                    current_entry.valid = (current_entry.qty > 0);
+                    
+                    ask_m10k_write_data[write_block_sel] <= {7'b0, current_entry};  // Pad to 40 bits
+                    ask_m10k_write_addr[write_block_sel] <= write_block_addr;
+                    ask_m10k_we[write_block_sel] <= 1'b1;
                 end
             end
-            else begin
-                ask_buffer[buffer_index].qty <= ask_buffer[buffer_index].qty + delta_qty_in;
-                if (ask_buffer[buffer_index].qty + delta_qty_in <= '0) begin
-                    ask_buffer[buffer_index].valid <= 1'b0;
-                end else begin
-                    ask_buffer[buffer_index].valid <= 1'b1;
+            
+            // Continuously read all entries for reduction tree (broadcast read addresses)
+            for (int i = 0; i < NUM_M10K_BLOCKS; i++) begin
+                for (int j = 0; j < 256; j++) begin
+                    automatic int addr_idx = i * 256 + j;
+                    bid_m10k_read_addr[i] <= j[7:0];
+                    ask_m10k_read_addr[i] <= j[7:0];
+                end
+            end
+            
+            // Register M10K read outputs
+            for (int i = 0; i < NUM_M10K_BLOCKS; i++) begin
+                for (int j = 0; j < 256; j++) begin
+                    automatic int addr_idx = i * 256 + j;
+                    if (addr_idx < BUFFER_SIZE) begin
+                        bid_buffer_read_q[addr_idx] <= bid_m10k_read_data[i][32:0];
+                        ask_buffer_read_q[addr_idx] <= ask_m10k_read_data[i][32:0];
+                    end
                 end
             end
         end
@@ -92,8 +176,8 @@ module orderbook #(
                 automatic logic [PRICE_WIDTH-1:0] bid_left_masked_addr;
                 automatic logic [PRICE_WIDTH-1:0] bid_right_masked_addr;
 
-                bid_left_masked_addr = bid_buffer[bid_left_idx].valid ? bid_left_idx : '0;
-                bid_right_masked_addr = bid_buffer[bid_right_idx].valid ? bid_right_idx : '0;
+                bid_left_masked_addr = bid_buffer_read_q[bid_left_idx].valid ? bid_left_idx : '0;
+                bid_right_masked_addr = bid_buffer_read_q[bid_right_idx].valid ? bid_right_idx : '0;
 
                 if (bid_left_masked_addr >= bid_right_masked_addr) begin
                     gen_reduction_arrays[1].bid_stage[idx] = bid_left_idx;
@@ -110,8 +194,8 @@ module orderbook #(
                 automatic logic [PRICE_WIDTH-1:0] ask_left_masked_addr;
                 automatic logic [PRICE_WIDTH-1:0] ask_right_masked_addr;
 
-                ask_left_masked_addr = ask_buffer[ask_left_idx].valid ? ask_left_idx : {PRICE_WIDTH{1'b1}};
-                ask_right_masked_addr = ask_buffer[ask_right_idx].valid ? ask_right_idx : {PRICE_WIDTH{1'b1}};
+                ask_left_masked_addr = ask_buffer_read_q[ask_left_idx].valid ? ask_left_idx : {PRICE_WIDTH{1'b1}};
+                ask_right_masked_addr = ask_buffer_read_q[ask_right_idx].valid ? ask_right_idx : {PRICE_WIDTH{1'b1}};
 
                 if (ask_left_masked_addr <= ask_right_masked_addr) begin
                     gen_reduction_arrays[1].ask_stage[idx] = ask_left_idx;
@@ -150,9 +234,9 @@ module orderbook #(
     endgenerate
 
     assign best_bid_price = gen_reduction_arrays[NUM_STAGES].bid_stage[0] + LIMIT_DOWN_PRICE;
-    assign best_bid_qty = bid_buffer[gen_reduction_arrays[NUM_STAGES].bid_stage[0]].qty;
+    assign best_bid_qty = bid_buffer_read_q[gen_reduction_arrays[NUM_STAGES].bid_stage[0]].qty;
     
     assign best_ask_price = gen_reduction_arrays[NUM_STAGES].ask_stage[0] + LIMIT_DOWN_PRICE;
-    assign best_ask_qty = ask_buffer[gen_reduction_arrays[NUM_STAGES].ask_stage[0]].qty;
+    assign best_ask_qty = ask_buffer_read_q[gen_reduction_arrays[NUM_STAGES].ask_stage[0]].qty;
     
 endmodule: orderbook

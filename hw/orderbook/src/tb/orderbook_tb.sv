@@ -5,8 +5,8 @@ module orderbook_tb;
     import _pkg::*;
 
     // Parameters
-    localparam BUFFER_SIZE = 512;
-    localparam LIMIT_DOWN_PRICE = 29479;
+    localparam BUFFER_SIZE = 4096;
+    localparam LIMIT_DOWN_PRICE = 25895;
     localparam PRICE_WIDTH = 32;
     localparam QTY_WIDTH = 32;
     localparam CLK_PERIOD = 10;
