@@ -1,0 +1,125 @@
+#include <stdio.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <assert.h>
+
+// Include the ordermap definitions
+typedef struct {
+    uint32_t price;
+    uint32_t delta_qty;
+    bool     side;  // 0 = buy, 1 = sell
+} ob_update;
+
+typedef struct {
+    uint32_t price;
+    uint32_t qty;        
+    bool     side;  // 0 = buy, 1 = sell  
+    bool     valid;      
+    uint16_t _pad;       
+} order_entry_t;
+
+#define MAX_ORDERS 964236
+extern order_entry_t order_map[MAX_ORDERS];
+
+extern ob_update order_add(uint64_t id, uint32_t price, uint32_t qty, uint8_t side);
+extern ob_update order_cancel_execute(uint64_t id, uint32_t qty);
+
+void test_order_add_buy() {
+    printf("Test 1: Add buy order...\n");
+    ob_update upd = order_add(100, 50000, 100, 'B');
+    
+    assert(upd.price == 50000);
+    assert(upd.delta_qty == 100);
+    assert(upd.side == 0);  // Buy = 0
+    assert(order_map[100].valid == 1);
+    assert(order_map[100].side == 0);
+    
+    printf("  ✓ Buy order added correctly\n");
+}
+
+void test_order_add_sell() {
+    printf("Test 2: Add sell order...\n");
+    ob_update upd = order_add(200, 51000, 250, 'S');
+    
+    assert(upd.price == 51000);
+    assert(upd.delta_qty == 250);
+    assert(upd.side == 1);  // Sell = 1
+    assert(order_map[200].valid == 1);
+    assert(order_map[200].side == 1);
+    
+    printf("  ✓ Sell order added correctly\n");
+}
+
+void test_partial_cancel() {
+    printf("Test 3: Partial cancel/execute...\n");
+    // First add an order
+    order_add(300, 49500, 500, 'B');
+    
+    // Partial cancel/execute 200 units
+    ob_update upd = order_cancel_execute(300, 200);
+    
+    assert(upd.price == 49500);
+    assert(upd.delta_qty == 200);
+    assert(upd.side == 0);
+    assert(order_map[300].qty == 300);  // 500 - 200 = 300
+    assert(order_map[300].valid == 1);  // Still valid
+    
+    printf("  ✓ Partial cancel works correctly\n");
+}
+
+void test_full_cancel() {
+    printf("Test 4: Full cancel/execute...\n");
+    // First add an order
+    order_add(400, 52000, 150, 'S');
+    
+    // Fully cancel/execute
+    ob_update upd = order_cancel_execute(400, 150);
+    
+    assert(upd.price == 52000);
+    assert(upd.delta_qty == 150);
+    assert(upd.side == 1);
+    assert(order_map[400].qty == 0);
+    assert(order_map[400].valid == 0);  // No longer valid
+    
+    printf("  ✓ Full cancel works correctly\n");
+}
+
+void test_over_cancel() {
+    printf("Test 5: Over-cancel (cancel more than available)...\n");
+    // First add an order
+    order_add(500, 48000, 100, 'B');
+    
+    // Try to cancel more than available
+    ob_update upd = order_cancel_execute(500, 200);
+    
+    assert(upd.price == 48000);
+    assert(upd.delta_qty == 200);
+    assert(order_map[500].qty == 0);
+    assert(order_map[500].valid == 0);  // Should be invalidated
+    
+    printf("  ✓ Over-cancel handled correctly\n");
+}
+
+void test_memory_size() {
+    printf("Test 6: Memory size calculation...\n");
+    size_t entry_size = sizeof(order_entry_t);
+    size_t total_size = entry_size * MAX_ORDERS;
+    
+    printf("  Size per entry: %zu bytes\n", entry_size);
+    printf("  Total entries: %d\n", MAX_ORDERS);
+    printf("  Total memory: %zu bytes (%.2f MB)\n", total_size, total_size / (1024.0 * 1024.0));
+}
+
+int main() {
+    printf("=== OrderMap Test Suite ===\n\n");
+    
+    test_order_add_buy();
+    test_order_add_sell();
+    test_partial_cancel();
+    test_full_cancel();
+    test_over_cancel();
+    test_memory_size();
+    
+    printf("\n✓ All tests passed!\n");
+    return 0;
+}
