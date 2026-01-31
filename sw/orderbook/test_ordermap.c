@@ -3,12 +3,13 @@
 #include <stdbool.h>
 #include <assert.h>
 
-// Include the ordermap definitions
-typedef struct {
-    uint32_t price;
-    uint32_t delta_qty;
-    bool     side;  // 0 = buy, 1 = sell
-} ob_update;
+// ob_update is packed into 64 bits
+typedef uint64_t ob_update;
+
+// Unpack macros
+#define OB_UPDATE_GET_SIDE(x)     ((x) >> 63)
+#define OB_UPDATE_GET_PRICE(x)    (((x) >> 32) & 0x7FFFFFFF) << 2
+#define OB_UPDATE_GET_QTY(x)      ((x) & 0xFFFFFFFF)
 
 typedef struct {
     uint32_t price;
@@ -28,9 +29,9 @@ void test_order_add_buy() {
     printf("Test 1: Add buy order...\n");
     ob_update upd = order_add(100, 50000, 100, 'B');
     
-    assert(upd.price == 50000);
-    assert(upd.delta_qty == 100);
-    assert(upd.side == 0);  // Buy = 0
+    assert(OB_UPDATE_GET_PRICE(upd) == 50000);
+    assert(OB_UPDATE_GET_QTY(upd) == 100);
+    assert(OB_UPDATE_GET_SIDE(upd) == 0);  // Buy = 0
     assert(order_map[100].valid == 1);
     assert(order_map[100].side == 0);
     
@@ -41,9 +42,9 @@ void test_order_add_sell() {
     printf("Test 2: Add sell order...\n");
     ob_update upd = order_add(200, 51000, 250, 'S');
     
-    assert(upd.price == 51000);
-    assert(upd.delta_qty == 250);
-    assert(upd.side == 1);  // Sell = 1
+    assert(OB_UPDATE_GET_PRICE(upd) == 51000);
+    assert(OB_UPDATE_GET_QTY(upd) == 250);
+    assert(OB_UPDATE_GET_SIDE(upd) == 1);  // Sell = 1
     assert(order_map[200].valid == 1);
     assert(order_map[200].side == 1);
     
@@ -58,9 +59,9 @@ void test_partial_cancel() {
     // Partial cancel/execute 200 units
     ob_update upd = order_cancel_execute(300, 200);
     
-    assert(upd.price == 49500);
-    assert(upd.delta_qty == 200);
-    assert(upd.side == 0);
+    assert(OB_UPDATE_GET_PRICE(upd) == 49500);
+    assert(OB_UPDATE_GET_QTY(upd) == 200);
+    assert(OB_UPDATE_GET_SIDE(upd) == 0);
     assert(order_map[300].qty == 300);  // 500 - 200 = 300
     assert(order_map[300].valid == 1);  // Still valid
     
@@ -75,9 +76,9 @@ void test_full_cancel() {
     // Fully cancel/execute
     ob_update upd = order_cancel_execute(400, 150);
     
-    assert(upd.price == 52000);
-    assert(upd.delta_qty == 150);
-    assert(upd.side == 1);
+    assert(OB_UPDATE_GET_PRICE(upd) == 52000);
+    assert(OB_UPDATE_GET_QTY(upd) == 150);
+    assert(OB_UPDATE_GET_SIDE(upd) == 1);
     assert(order_map[400].qty == 0);
     assert(order_map[400].valid == 0);  // No longer valid
     
@@ -92,8 +93,8 @@ void test_over_cancel() {
     // Try to cancel more than available
     ob_update upd = order_cancel_execute(500, 200);
     
-    assert(upd.price == 48000);
-    assert(upd.delta_qty == 200);
+    assert(OB_UPDATE_GET_PRICE(upd) == 48000);
+    assert(OB_UPDATE_GET_QTY(upd) == 200);
     assert(order_map[500].qty == 0);
     assert(order_map[500].valid == 0);  // Should be invalidated
     

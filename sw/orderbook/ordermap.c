@@ -1,11 +1,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-typedef struct {
-    uint32_t price;
-    uint32_t delta_qty;
-    bool     side;  // 0 = buy, 1 = sell
-} ob_update;
+// ob_update packed into 64 bits:
+// Bit 63: side (0=buy, 1=sell)
+// Bits 32-62: price >> 2 (31 bits, divide by 4 using fast bit shift)
+// Bits 0-31: delta_qty (32 bits)
+typedef uint64_t ob_update;
 
 typedef struct {
     uint32_t price;
@@ -25,25 +25,21 @@ ob_update order_add(uint64_t id, uint32_t price,
     order_entry_t *e = &order_map[id];
     e->price = price;
     e->qty   = qty;
-    e->side  = (side == 'S') ? 1 : 0;  // 'B' = 0 (buy), 'S' = 1 (sell)
+    e->side  = (side == 'S');  // 'B' = 0 (buy), 'S' = 1 (sell)
     e->valid = 1;
     
-    ob_update upd;
-    upd.price = price;
-    upd.delta_qty = qty;
-    upd.side = e->side;
-    return upd;
+    // Pack into 64 bits: [side(1bit)][price>>2(31bits)][qty(32bits)]
+    return ((uint64_t)e->side << 63) | ((uint64_t)(price >> 2) << 32) | qty;
 }
 
 ob_update order_cancel_execute(uint64_t id, uint32_t qty)
 {
     order_entry_t *e = &order_map[id];
-    ob_update upd;
-    upd.price = e->price;
-    upd.delta_qty = qty;
-    upd.side = e->side;
     
-    if (!e->valid) return upd;
+    // Pack into 64 bits: [side(1bit)][price>>2(31bits)][qty(32bits)]
+    uint64_t packed = ((uint64_t)e->side << 63) | ((uint64_t)(e->price >> 2) << 32) | qty;
+    
+    if (!e->valid) return packed;
 
     if (qty >= e->qty) {
         // fully canceled/executed
@@ -54,5 +50,5 @@ ob_update order_cancel_execute(uint64_t id, uint32_t qty)
         e->qty -= qty;
     }
     
-    return upd;
+    return packed;
 }
