@@ -41,11 +41,14 @@ def main():
 
     total_msgs = 100
 
+    add = itch_add(order_id, 'B', qty, price)
+    exe = itch_execute(order_id, 40)
+    can = itch_cancel(order_id, 60)
+
+    t0 = time.perf_counter_ns()
+
     # Send repeated A→E→X sequences
     for i in range(total_msgs):
-        add = itch_add(order_id, 'B', qty, price)
-        exe = itch_execute(order_id, 40)
-        can = itch_cancel(order_id, 60)
 
         sock.sendto(add, (DE1_IP, DE1_PORT))
         sock.sendto(exe, (DE1_IP, DE1_PORT))
@@ -53,6 +56,14 @@ def main():
 
         # Optional small delay if needed
         # time.sleep(0.001)
+
+    t1 = time.perf_counter_ns()
+    dt_ns = (t1 - t0)
+    pkts = total_msgs * 3
+    ns_per_pkt = dt_ns / pkts
+
+    print(f"{pkts} packets in {dt_ns} ns "
+        f"({ns_per_pkt:.0f} ns/pkt)")
 
     sock.close()
     print(f"Sent {total_msgs*3} ITCH messages (A→E→X sequences)")

@@ -135,10 +135,11 @@ static volatile uint32_t *fifo_map(void)
  * Time helpers
  * ============================================================ */
 
-static inline uint64_t timespec_to_us(const struct timespec *ts)
+static inline uint64_t timespec_to_ns(const struct timespec *ts)
 {
-    return ts->tv_sec * 1000000ULL + ts->tv_nsec / 1000;
+    return (uint64_t)ts->tv_sec * 1000000000ULL + (uint64_t)ts->tv_nsec;
 }
+
 
 /* ============================================================
  * Main
@@ -152,6 +153,15 @@ int main(void)
     if (sock < 0)
         return 1;
 
+    struct timeval tv;
+    tv.tv_sec  = 1;
+    tv.tv_usec = 0;
+
+    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+                &tv, sizeof(tv)) < 0) {
+        perror("setsockopt(SO_RCVTIMEO)");
+    }
+
     volatile uint32_t *fifo = fifo_map();
     if (!fifo) {
         close(sock);
@@ -161,14 +171,37 @@ int main(void)
     printf("NetIO: listening for ITCH UDP on port %d\n", LISTEN_PORT);
 
     int warmup = 0;
-    uint64_t total_us = 0;
+    uint64_t tot_latency_rx = 0;
+    uint64_t tot_latency_parse = 0;
+    uint64_t tot_latency_ordermap = 0;
+    uint64_t tot_latency_fifo = 0;
+
+    uint64_t total_received = 0;
+    uint64_t total_measured = 0;
+
+
     int pkt_count = 0;
 
     while (1) {
-        struct timespec t_start, t_end;
+        struct timespec t_rx_start, t_rx_end, t_after_parse, t_after_ordermap, t_after_fifo;
+
+        clock_gettime(CLOCK_MONOTONIC_RAW, &t_rx_start);
+
         ssize_t n = recvfrom(sock, buf, sizeof(buf), 0, NULL, NULL);
 
-        clock_gettime(CLOCK_MONOTONIC_RAW, &t_start);
+        if (n < 0 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
+            if (total_received > 0) {
+                printf("[STALL] recv timeout\n");
+                printf("Final counts: received=%" PRIu64
+                    " measured=%" PRIu64 "\n",
+                    total_received, total_measured);
+            }
+            continue;
+        }
+
+        clock_gettime(CLOCK_MONOTONIC_RAW, &t_rx_end);
+
+        total_received++;
 
         if (n <= 0)
             continue;
@@ -195,6 +228,8 @@ int main(void)
             memcpy(&price, &buf[32], 4);
             side = buf[19];
 
+            clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
+
             upd = order_add(order_id, price, quantity, side);
 
            // printf("ITCH A: id=%" PRIu64 " upd=0x%016" PRIx64 "\n",
@@ -204,6 +239,8 @@ int main(void)
         case 'E':
             memcpy(&order_id, &buf[11], 8);
             memcpy(&quantity, &buf[19], 4);
+
+            clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
 
             upd = order_cancel_execute(order_id, quantity);
 
@@ -215,6 +252,8 @@ int main(void)
             memcpy(&order_id, &buf[11], 8);
             memcpy(&quantity, &buf[19], 4);
 
+            clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
+
             upd = order_cancel_execute(order_id, quantity);
 
             //printf("ITCH X: id=%" PRIu64 " upd=0x%016" PRIx64 "\n",
@@ -225,25 +264,46 @@ int main(void)
             continue;
         }
 
-        fifo_write_update64(fifo, upd);
-        clock_gettime(CLOCK_MONOTONIC_RAW, &t_end);
+        clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_ordermap);
 
-        uint64_t latency_us = timespec_to_us(&t_end) - timespec_to_us(&t_start);
+        fifo_write_update64(fifo, upd);
+
+        clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_fifo);
+
+        uint64_t latency_rx = timespec_to_ns(&t_rx_end) - timespec_to_ns(&t_rx_start);
+        uint64_t latency_parse = timespec_to_ns(&t_after_parse) - timespec_to_ns(&t_rx_end);
+        uint64_t latency_ordermap = timespec_to_ns(&t_after_ordermap) - timespec_to_ns(&t_after_parse);
+        uint64_t latency_fifo = timespec_to_ns(&t_after_fifo) - timespec_to_ns(&t_after_ordermap);
 
         if (warmup < WARMUP_PACKETS) {
             warmup++;
             continue; // skip first few packets
         }
 
-        total_us += latency_us;
-        pkt_count++;
-        printf("Packet %d latency: %" PRIu64 " us\n", pkt_count, latency_us);
+        total_measured++;
 
-        if (pkt_count % AVG_INTERVAL == 0) {
-            printf("Average latency over %d packets: %" PRIu64 " us\n",
-                   AVG_INTERVAL, total_us / AVG_INTERVAL);
-            total_us = 0;
+
+        tot_latency_rx += latency_rx;
+        tot_latency_parse += latency_parse;
+        tot_latency_ordermap += latency_ordermap;
+        tot_latency_fifo += latency_fifo;
+
+        //pkt_count++;
+
+        if (total_measured % AVG_INTERVAL == 0) {
+            printf("Latency avg over %d pkts: rx=%" PRIu64 " ns, parse=%" PRIu64 " ns, ordermap=%" PRIu64 " ns, fifo=%" PRIu64" ns\n",
+                AVG_INTERVAL,
+                tot_latency_rx / AVG_INTERVAL,
+                tot_latency_parse / AVG_INTERVAL,
+                tot_latency_ordermap / AVG_INTERVAL,
+                tot_latency_fifo / AVG_INTERVAL );
+
+            tot_latency_rx = 0;
+            tot_latency_parse = 0;
+            tot_latency_ordermap = 0;
+            tot_latency_fifo = 0;
         }
+
     }
 
     return 0;
