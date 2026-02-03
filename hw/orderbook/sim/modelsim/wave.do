@@ -1,0 +1,49 @@
+onerror {resume}
+quietly WaveActivateNextPane {} 0
+add wave -noupdate /orderbook_tb/clk
+add wave -noupdate /orderbook_tb/rst_n
+add wave -noupdate /orderbook_tb/dut/state
+add wave -noupdate /orderbook_tb/dut/next_state
+add wave -noupdate /orderbook_tb/side_in
+add wave -noupdate -radix decimal /orderbook_tb/price_in
+add wave -noupdate -radix decimal /orderbook_tb/delta_qty_in
+add wave -noupdate /orderbook_tb/valid_in
+add wave -noupdate -expand -group BID -radix decimal /orderbook_tb/best_bid_price
+add wave -noupdate -expand -group BID -radix decimal /orderbook_tb/best_bid_qty
+add wave -noupdate -expand -group BID /orderbook_tb/best_bid_valid
+add wave -noupdate -expand -group BID -radix decimal -childformat {{{/orderbook_tb/dut/bid_block[0]} -radix decimal -childformat {{{/orderbook_tb/dut/bid_block[0].price} -radix decimal} {{/orderbook_tb/dut/bid_block[0].qty} -radix decimal} {{/orderbook_tb/dut/bid_block[0].valid} -radix decimal}}} {{/orderbook_tb/dut/bid_block[1]} -radix decimal -childformat {{{/orderbook_tb/dut/bid_block[1].price} -radix decimal} {{/orderbook_tb/dut/bid_block[1].qty} -radix decimal} {{/orderbook_tb/dut/bid_block[1].valid} -radix decimal}}} {{/orderbook_tb/dut/bid_block[2]} -radix decimal} {{/orderbook_tb/dut/bid_block[3]} -radix decimal} {{/orderbook_tb/dut/bid_block[4]} -radix decimal} {{/orderbook_tb/dut/bid_block[5]} -radix decimal} {{/orderbook_tb/dut/bid_block[6]} -radix decimal} {{/orderbook_tb/dut/bid_block[7]} -radix decimal} {{/orderbook_tb/dut/bid_block[8]} -radix decimal} {{/orderbook_tb/dut/bid_block[9]} -radix decimal} {{/orderbook_tb/dut/bid_block[10]} -radix decimal} {{/orderbook_tb/dut/bid_block[11]} -radix decimal} {{/orderbook_tb/dut/bid_block[12]} -radix decimal} {{/orderbook_tb/dut/bid_block[13]} -radix decimal} {{/orderbook_tb/dut/bid_block[14]} -radix decimal} {{/orderbook_tb/dut/bid_block[15]} -radix decimal}} -subitemconfig {{/orderbook_tb/dut/bid_block[0]} {-height 15 -radix decimal -childformat {{{/orderbook_tb/dut/bid_block[0].price} -radix decimal} {{/orderbook_tb/dut/bid_block[0].qty} -radix decimal} {{/orderbook_tb/dut/bid_block[0].valid} -radix decimal}}} {/orderbook_tb/dut/bid_block[0].price} {-height 15 -radix decimal} {/orderbook_tb/dut/bid_block[0].qty} {-height 15 -radix decimal} {/orderbook_tb/dut/bid_block[0].valid} {-radix decimal} {/orderbook_tb/dut/bid_block[1]} {-height 15 -radix decimal -childformat {{{/orderbook_tb/dut/bid_block[1].price} -radix decimal} {{/orderbook_tb/dut/bid_block[1].qty} -radix decimal} {{/orderbook_tb/dut/bid_block[1].valid} -radix decimal}}} {/orderbook_tb/dut/bid_block[1].price} {-height 15 -radix decimal} {/orderbook_tb/dut/bid_block[1].qty} {-height 15 -radix decimal} {/orderbook_tb/dut/bid_block[1].valid} {-radix decimal} {/orderbook_tb/dut/bid_block[2]} {-radix decimal} {/orderbook_tb/dut/bid_block[3]} {-radix decimal} {/orderbook_tb/dut/bid_block[4]} {-radix decimal} {/orderbook_tb/dut/bid_block[5]} {-radix decimal} {/orderbook_tb/dut/bid_block[6]} {-radix decimal} {/orderbook_tb/dut/bid_block[7]} {-radix decimal} {/orderbook_tb/dut/bid_block[8]} {-radix decimal} {/orderbook_tb/dut/bid_block[9]} {-radix decimal} {/orderbook_tb/dut/bid_block[10]} {-radix decimal} {/orderbook_tb/dut/bid_block[11]} {-radix decimal} {/orderbook_tb/dut/bid_block[12]} {-radix decimal} {/orderbook_tb/dut/bid_block[13]} {-radix decimal} {/orderbook_tb/dut/bid_block[14]} {-radix decimal} {/orderbook_tb/dut/bid_block[15]} {-radix decimal}} /orderbook_tb/dut/bid_block
+add wave -noupdate -expand -group BID -radix decimal -childformat {{{/orderbook_tb/dut/bid_stage8[0]} -radix decimal} {{/orderbook_tb/dut/bid_stage8[1]} -radix decimal} {{/orderbook_tb/dut/bid_stage8[2]} -radix decimal} {{/orderbook_tb/dut/bid_stage8[3]} -radix decimal} {{/orderbook_tb/dut/bid_stage8[4]} -radix decimal} {{/orderbook_tb/dut/bid_stage8[5]} -radix decimal} {{/orderbook_tb/dut/bid_stage8[6]} -radix decimal} {{/orderbook_tb/dut/bid_stage8[7]} -radix decimal}} -subitemconfig {{/orderbook_tb/dut/bid_stage8[0]} {-radix decimal} {/orderbook_tb/dut/bid_stage8[1]} {-radix decimal} {/orderbook_tb/dut/bid_stage8[2]} {-radix decimal} {/orderbook_tb/dut/bid_stage8[3]} {-radix decimal} {/orderbook_tb/dut/bid_stage8[4]} {-radix decimal} {/orderbook_tb/dut/bid_stage8[5]} {-radix decimal} {/orderbook_tb/dut/bid_stage8[6]} {-radix decimal} {/orderbook_tb/dut/bid_stage8[7]} {-radix decimal}} /orderbook_tb/dut/bid_stage8
+add wave -noupdate -expand -group BID /orderbook_tb/dut/bid_stage4
+add wave -noupdate -expand -group BID /orderbook_tb/dut/bid_stage2
+add wave -noupdate -expand -group BID -radix decimal /orderbook_tb/dut/bid_final
+add wave -noupdate -expand -group BID -expand -group BID_MEM_WRITE -radix decimal /orderbook_tb/dut/bid_m10k_write_data
+add wave -noupdate -expand -group BID -expand -group BID_MEM_WRITE -radix decimal /orderbook_tb/dut/bid_m10k_write_addr
+add wave -noupdate -expand -group BID -expand -group BID_MEM_WRITE /orderbook_tb/dut/bid_m10k_we
+add wave -noupdate -expand -group BID -expand -group BID_MEM_READ -radix decimal /orderbook_tb/dut/bid_m10k_read_data
+add wave -noupdate -expand -group BID -expand -group BID_MEM_READ -radix decimal /orderbook_tb/dut/bid_m10k_read_addr
+add wave -noupdate -group ASK /orderbook_tb/best_ask_price
+add wave -noupdate -group ASK /orderbook_tb/best_ask_qty
+add wave -noupdate -group ASK /orderbook_tb/best_ask_valid
+add wave -noupdate -group ASK -expand -group ASK_MEM_WRITE -radix decimal /orderbook_tb/dut/ask_m10k_write_data
+add wave -noupdate -group ASK -expand -group ASK_MEM_WRITE -radix decimal /orderbook_tb/dut/ask_m10k_write_addr
+add wave -noupdate -group ASK -expand -group ASK_MEM_WRITE /orderbook_tb/dut/ask_m10k_we
+add wave -noupdate -group ASK -expand -group ASK_MEM_READ -radix decimal /orderbook_tb/dut/ask_m10k_read_data
+add wave -noupdate -group ASK -expand -group ASK_MEM_READ -radix decimal /orderbook_tb/dut/ask_m10k_read_addr
+TreeUpdate [SetDefaultTree]
+WaveRestoreCursors {{Cursor 1} {115000 ps} 0}
+quietly wave cursor active 1
+configure wave -namecolwidth 276
+configure wave -valuecolwidth 100
+configure wave -justifyvalue left
+configure wave -signalnamewidth 0
+configure wave -snapdistance 10
+configure wave -datasetprefix 0
+configure wave -rowmargin 4
+configure wave -childrowmargin 2
+configure wave -gridoffset 0
+configure wave -gridperiod 1
+configure wave -griddelta 40
+configure wave -timeline 0
+configure wave -timelineunits ps
+update
+WaveRestoreZoom {0 ps} {232760 ps}

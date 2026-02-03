@@ -5,9 +5,10 @@ module orderbook #(
     parameter LIMIT_DOWN_PRICE = 27963, // 279.63, opening price 299.91
     parameter PRICE_WIDTH = 32,
     parameter QTY_WIDTH = 32,
-    parameter NUM_M10K_BLOCKS = BUFFER_SIZE / 256  // Number of M10K blocks needed
+    parameter M10K_BLOCK_SIZE = 256,  // Size of each M10K block
+    parameter NUM_M10K_BLOCKS = BUFFER_SIZE / M10K_BLOCK_SIZE  // Number of M10K blocks needed
 )(
-    input  logic                     clk,
+    input  logic                     CLOCK_50,
     input  logic                     rst_n,
     input  side_t                    side_in,
     input  logic [PRICE_WIDTH-1:0]   price_in,
@@ -23,6 +24,23 @@ module orderbook #(
     output logic                     best_ask_valid
 );
 
+    // PLL signals
+    logic clk;              // PLL output clock
+    logic pll_locked;       // PLL lock status
+    logic rst_n_sync;       // Synchronized reset: active when rst_n AND pll_locked
+    
+    // Instantiate PLL
+    pll_ip u_pll (
+        .clk_clk            (CLOCK_50),
+        .reset_reset_n      (rst_n),
+        .pll_0_outclk0_clk  (clk),
+        .pll_0_locked_export(pll_locked)
+    );
+    
+    // Combine external reset with PLL lock status
+    // System stays in reset until PLL is locked and external reset is released
+    assign rst_n_sync = rst_n & pll_locked;
+
     logic [PRICE_WIDTH-1:0] buffer_index;
     always_comb begin
         buffer_index = (price_in - LIMIT_DOWN_PRICE);
@@ -32,6 +50,26 @@ module orderbook #(
         logic [QTY_WIDTH-1:0]   qty;
         logic                   valid;
     } entry_t;
+
+    // Pre-computed block base addresses to reduce arithmetic in critical path
+    localparam logic [PRICE_WIDTH-1:0] BLOCK_BASE_PRICE [0:NUM_M10K_BLOCKS-1] = '{
+        LIMIT_DOWN_PRICE + (0 * M10K_BLOCK_SIZE),
+        LIMIT_DOWN_PRICE + (1 * M10K_BLOCK_SIZE),
+        LIMIT_DOWN_PRICE + (2 * M10K_BLOCK_SIZE),
+        LIMIT_DOWN_PRICE + (3 * M10K_BLOCK_SIZE),
+        LIMIT_DOWN_PRICE + (4 * M10K_BLOCK_SIZE),
+        LIMIT_DOWN_PRICE + (5 * M10K_BLOCK_SIZE),
+        LIMIT_DOWN_PRICE + (6 * M10K_BLOCK_SIZE),
+        LIMIT_DOWN_PRICE + (7 * M10K_BLOCK_SIZE),
+        LIMIT_DOWN_PRICE + (8 * M10K_BLOCK_SIZE),
+        LIMIT_DOWN_PRICE + (9 * M10K_BLOCK_SIZE),
+        LIMIT_DOWN_PRICE + (10 * M10K_BLOCK_SIZE),
+        LIMIT_DOWN_PRICE + (11 * M10K_BLOCK_SIZE),
+        LIMIT_DOWN_PRICE + (12 * M10K_BLOCK_SIZE),
+        LIMIT_DOWN_PRICE + (13 * M10K_BLOCK_SIZE),
+        LIMIT_DOWN_PRICE + (14 * M10K_BLOCK_SIZE),
+        LIMIT_DOWN_PRICE + (15 * M10K_BLOCK_SIZE)
+    };
 
     // M10K memory interface signals (40-bit width for 33-bit entry_t)
     logic [39:0] bid_m10k_write_data [0:NUM_M10K_BLOCKS-1];
@@ -83,7 +121,9 @@ module orderbook #(
     // State machine for read-modify-write and reduction
     typedef enum logic [2:0] {
         IDLE,
+        READ_START,
         READ_WAIT,
+        MODIFY_COMPUTE,
         MODIFY_WRITE,
         REDUCE_SCAN,
         REDUCE_TREE
@@ -92,7 +132,6 @@ module orderbook #(
     state_t state, next_state;
     
     // Registered inputs for pipelined operation
-    logic [PRICE_WIDTH-1:0] price_reg;
     logic signed [QTY_WIDTH-1:0] delta_qty_reg;
     side_t side_reg;
     logic [$clog2(NUM_M10K_BLOCKS)-1:0] block_sel_reg;
@@ -100,7 +139,9 @@ module orderbook #(
     
     // Entry unpacking/packing
     entry_t current_entry, new_entry;
+    entry_t current_entry_reg;  // Pipeline register after mux
     logic signed [QTY_WIDTH-1:0] new_qty_signed;
+    logic signed [QTY_WIDTH-1:0] new_qty_signed_reg;  // Pipeline register for addition result
     
     // Best bid/ask structures
     typedef struct packed {
@@ -124,13 +165,14 @@ module orderbook #(
     best_entry_t ask_final;
     
     // Scan counters
-    logic [8:0] scan_addr;  // 0-256 (scan all 256 addresses)
+    logic [8:0] scan_addr;  // 0 to M10K_BLOCK_SIZE (scan all addresses in block)
+    logic [8:0] scan_addr_delayed;  // Delayed version to avoid subtraction
     logic [3:0] tree_stage; // Which reduction stage we're in
     logic write_done;       // Buffer flag for MODIFY_WRITE state
     
     // State machine
     always_ff @(posedge clk) begin
-        if (!rst_n) begin
+        if (!rst_n_sync) begin
             state <= IDLE;
         end else begin
             state <= next_state;
@@ -142,11 +184,19 @@ module orderbook #(
         case (state)
             IDLE: begin
                 if (valid_in) begin
-                    next_state = READ_WAIT;
+                    next_state = READ_START;
                 end
             end
             
+            READ_START: begin
+                next_state = READ_WAIT;
+            end
+            
             READ_WAIT: begin
+                next_state = MODIFY_COMPUTE;
+            end
+            
+            MODIFY_COMPUTE: begin
                 next_state = MODIFY_WRITE;
             end
             
@@ -157,7 +207,7 @@ module orderbook #(
             end
             
             REDUCE_SCAN: begin
-                if (scan_addr == 9'd256) begin  // After reading all 256 addresses
+                if (scan_addr == M10K_BLOCK_SIZE[8:0]) begin  // After reading all addresses in block
                     next_state = REDUCE_TREE;
                 end
             end
@@ -174,15 +224,17 @@ module orderbook #(
     
     // Control logic
     always_ff @(posedge clk) begin
-        if (!rst_n) begin
-            price_reg <= '0;
+        if (!rst_n_sync) begin
             delta_qty_reg <= '0;
             side_reg <= SIDE_BID;
             block_sel_reg <= '0;
             block_addr_reg <= '0;
             scan_addr <= '0;
+            scan_addr_delayed <= '0;
             tree_stage <= '0;
             write_done <= 1'b0;
+            current_entry_reg <= '0;
+            new_qty_signed_reg <= '0;
             
             // Initialize outputs
             best_bid_price <= '0;
@@ -218,7 +270,6 @@ module orderbook #(
                 IDLE: begin
                     if (valid_in) begin
                         // Register inputs
-                        price_reg <= price_in;
                         delta_qty_reg <= $signed(delta_qty_in);
                         side_reg <= side_in;
                         block_sel_reg <= write_block_sel;
@@ -234,25 +285,31 @@ module orderbook #(
                     end
                 end
                 
+                READ_START: begin
+                    // Buffer stage - allow read address to settle
+                end
+                
                 READ_WAIT: begin
-                    // Wait for read data
+                    // Register current_entry after the mux (pipeline stage)
+                    if (side_reg == SIDE_BID) begin
+                        current_entry_reg <= bid_m10k_read_data[block_sel_reg][32:0];
+                    end else begin
+                        current_entry_reg <= ask_m10k_read_data[block_sel_reg][32:0];
+                    end
+                end
+                
+                MODIFY_COMPUTE: begin
+                    // Pipeline stage 1: Compute new quantity (adder only)
+                    new_qty_signed_reg <= $signed(current_entry_reg.qty) + delta_qty_reg;
                 end
                 
                 MODIFY_WRITE: begin
                     if (!write_done) begin
-                        // Unpack current entry
-                        if (side_reg == SIDE_BID) begin
-                            current_entry = bid_m10k_read_data[block_sel_reg][32:0];
-                        end else begin
-                            current_entry = ask_m10k_read_data[block_sel_reg][32:0];
-                        end
-                        
-                        // Calculate new quantity
-                        new_qty_signed = $signed(current_entry.qty) + delta_qty_reg;
+                        // Pipeline stage 2: Check validity and write (comparator + mux)
                         
                         // Pack new entry with valid bit
-                        if (new_qty_signed > 0) begin
-                            new_entry.qty = new_qty_signed[QTY_WIDTH-1:0];
+                        if (new_qty_signed_reg > 0) begin
+                            new_entry.qty = new_qty_signed_reg[QTY_WIDTH-1:0];
                             new_entry.valid = 1'b1;
                         end else begin
                             new_entry.qty = '0;
@@ -284,25 +341,25 @@ module orderbook #(
                 end
                 
                 REDUCE_SCAN: begin
-                    // Scan all 256 addresses of each block
-                    if (scan_addr > 9'd0) begin  // Skip first cycle for data ready
+                    if (scan_addr > 9'd0) begin
+                        // Scan all 256 addresses of each block
                         for (int i = 0; i < NUM_M10K_BLOCKS; i++) begin
                             automatic entry_t bid_entry = bid_m10k_read_data[i][32:0];
                             automatic entry_t ask_entry = ask_m10k_read_data[i][32:0];
                             automatic logic [PRICE_WIDTH-1:0] bid_price;
                             automatic logic [PRICE_WIDTH-1:0] ask_price;
-                            
-                            // Calculate price level (scan_addr-1 because data from previous cycle)
-                            bid_price = LIMIT_DOWN_PRICE + (i * 256) + scan_addr - 1;
-                            ask_price = LIMIT_DOWN_PRICE + (i * 256) + scan_addr - 1;
-                            
+
+                            // Calculate price level using pre-computed base and delayed address (avoids subtraction)
+                            bid_price = BLOCK_BASE_PRICE[i] + scan_addr_delayed;
+                            ask_price = BLOCK_BASE_PRICE[i] + scan_addr_delayed;
+
                             // Best bid: keep larger price
                             if (bid_entry.valid && (!bid_block[i].valid || bid_price > bid_block[i].price)) begin
                                 bid_block[i].price <= bid_price;
                                 bid_block[i].qty <= bid_entry.qty;
                                 bid_block[i].valid <= 1'b1;
                             end
-                            
+
                             // Best ask: keep smaller price
                             if (ask_entry.valid && (!ask_block[i].valid || ask_price < ask_block[i].price)) begin
                                 ask_block[i].price <= ask_price;
@@ -312,10 +369,11 @@ module orderbook #(
                         end
                     end
                     
-                    if (scan_addr == 9'd256) begin
+                    if (scan_addr == M10K_BLOCK_SIZE[8:0]) begin
                         tree_stage <= 4'd0;
                     end else begin
                         scan_addr <= scan_addr + 9'd1;
+                        scan_addr_delayed <= scan_addr;
                         for (int i = 0; i < NUM_M10K_BLOCKS; i++) begin
                             bid_m10k_read_addr[i] <= scan_addr[7:0] + 8'd1;
                             ask_m10k_read_addr[i] <= scan_addr[7:0] + 8'd1;

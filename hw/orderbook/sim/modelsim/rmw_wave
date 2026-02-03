@@ -1,0 +1,44 @@
+onerror {resume}
+quietly WaveActivateNextPane {} 0
+add wave -noupdate /tb_orderbook_rmw/clk
+add wave -noupdate /tb_orderbook_rmw/rst_n
+add wave -noupdate /tb_orderbook_rmw/dut/state
+add wave -noupdate /tb_orderbook_rmw/dut/next_state
+add wave -noupdate /tb_orderbook_rmw/side_in
+add wave -noupdate -radix decimal /tb_orderbook_rmw/price_in
+add wave -noupdate /tb_orderbook_rmw/valid_in
+add wave -noupdate -radix decimal /tb_orderbook_rmw/delta_qty_in
+add wave -noupdate -group ASK -radix decimal /tb_orderbook_rmw/best_ask_price
+add wave -noupdate -group ASK -radix decimal /tb_orderbook_rmw/best_ask_qty
+add wave -noupdate -group ASK /tb_orderbook_rmw/best_ask_valid
+add wave -noupdate -group ASK -expand -group ASK_MEM_READ -radix decimal /tb_orderbook_rmw/dut/ask_m10k_read_data
+add wave -noupdate -group ASK -expand -group ASK_MEM_READ -radix hexadecimal /tb_orderbook_rmw/dut/ask_m10k_read_addr
+add wave -noupdate -group ASK -expand -group ASK_MEM_WRITE -radix hexadecimal /tb_orderbook_rmw/dut/ask_m10k_write_addr
+add wave -noupdate -group ASK -expand -group ASK_MEM_WRITE -radix decimal /tb_orderbook_rmw/dut/ask_m10k_write_data
+add wave -noupdate -group ASK -expand -group ASK_MEM_WRITE /tb_orderbook_rmw/dut/ask_m10k_we
+add wave -noupdate -expand -group BID -radix decimal /tb_orderbook_rmw/best_bid_price
+add wave -noupdate -expand -group BID -radix decimal /tb_orderbook_rmw/best_bid_qty
+add wave -noupdate -expand -group BID /tb_orderbook_rmw/best_bid_valid
+add wave -noupdate -expand -group BID -expand -group BID_MEM_READ -radix decimal /tb_orderbook_rmw/dut/bid_m10k_read_data
+add wave -noupdate -expand -group BID -expand -group BID_MEM_READ -radix decimal /tb_orderbook_rmw/dut/bid_m10k_read_addr
+add wave -noupdate -expand -group BID -expand -group BID_MEM_WRITE -radix decimal /tb_orderbook_rmw/dut/bid_m10k_write_addr
+add wave -noupdate -expand -group BID -expand -group BID_MEM_WRITE -radix decimal /tb_orderbook_rmw/dut/bid_m10k_write_data
+add wave -noupdate -expand -group BID -expand -group BID_MEM_WRITE /tb_orderbook_rmw/dut/bid_m10k_we
+TreeUpdate [SetDefaultTree]
+WaveRestoreCursors {{Cursor 1} {665000 ps} 0}
+quietly wave cursor active 1
+configure wave -namecolwidth 302
+configure wave -valuecolwidth 105
+configure wave -justifyvalue left
+configure wave -signalnamewidth 0
+configure wave -snapdistance 10
+configure wave -datasetprefix 0
+configure wave -rowmargin 4
+configure wave -childrowmargin 2
+configure wave -gridoffset 0
+configure wave -gridperiod 1
+configure wave -griddelta 40
+configure wave -timeline 0
+configure wave -timelineunits ps
+update
+WaveRestoreZoom {27343 ps} {201467 ps}
