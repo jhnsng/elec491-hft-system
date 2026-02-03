@@ -13,8 +13,6 @@ module orderbook #(
     input  logic [PRICE_WIDTH-1:0]   price_in,
     input  logic [QTY_WIDTH-1:0]     delta_qty_in,
     input  logic                     valid_in,
-    output logic                     valid_out,
-    output order_info_t              order_out,
     // Best bid outputs
     output logic [PRICE_WIDTH-1:0]   best_bid_price,
     output logic [QTY_WIDTH-1:0]     best_bid_qty,
@@ -111,7 +109,7 @@ module orderbook #(
         logic                   valid;
     } best_entry_t;
     
-    // Per-block best (16 blocks) - from scanning first 4 addresses
+    // Per-block best (16 blocks) - from scanning all 256 addresses
     best_entry_t bid_block[0:15];
     best_entry_t ask_block[0:15];
     
@@ -126,7 +124,7 @@ module orderbook #(
     best_entry_t ask_final;
     
     // Scan counters
-    logic [2:0] scan_addr;  // 0-4 (only scan first 4 addresses)
+    logic [8:0] scan_addr;  // 0-256 (scan all 256 addresses)
     logic [3:0] tree_stage; // Which reduction stage we're in
     logic write_done;       // Buffer flag for MODIFY_WRITE state
     
@@ -159,7 +157,7 @@ module orderbook #(
             end
             
             REDUCE_SCAN: begin
-                if (scan_addr == 3'd4) begin  // After reading 4 addresses
+                if (scan_addr == 9'd256) begin  // After reading all 256 addresses
                     next_state = REDUCE_TREE;
                 end
             end
@@ -182,7 +180,6 @@ module orderbook #(
             side_reg <= SIDE_BID;
             block_sel_reg <= '0;
             block_addr_reg <= '0;
-            valid_out <= 1'b0;
             scan_addr <= '0;
             tree_stage <= '0;
             write_done <= 1'b0;
@@ -216,8 +213,6 @@ module orderbook #(
                 bid_m10k_we[i] <= 1'b0;
                 ask_m10k_we[i] <= 1'b0;
             end
-            
-            valid_out <= 1'b0;
             
             case (state)
                 IDLE: begin
@@ -275,11 +270,10 @@ module orderbook #(
                             ask_m10k_write_data[block_sel_reg] <= {7'b0, new_entry};
                         end
                         
-                        valid_out <= 1'b1;
                         write_done <= 1'b1;  // Set flag for next cycle
                     end else begin
                         // Second cycle - initialize scan
-                        scan_addr <= 3'd0;
+                        scan_addr <= 9'd0;
                         for (int i = 0; i < NUM_M10K_BLOCKS; i++) begin
                             bid_block[i].valid <= 1'b0;
                             ask_block[i].valid <= 1'b0;
@@ -290,8 +284,8 @@ module orderbook #(
                 end
                 
                 REDUCE_SCAN: begin
-                    // Scan first 4 addresses of each block
-                    if (scan_addr > 3'd0) begin  // Skip first cycle for data ready
+                    // Scan all 256 addresses of each block
+                    if (scan_addr > 9'd0) begin  // Skip first cycle for data ready
                         for (int i = 0; i < NUM_M10K_BLOCKS; i++) begin
                             automatic entry_t bid_entry = bid_m10k_read_data[i][32:0];
                             automatic entry_t ask_entry = ask_m10k_read_data[i][32:0];
@@ -318,13 +312,13 @@ module orderbook #(
                         end
                     end
                     
-                    if (scan_addr == 3'd4) begin
+                    if (scan_addr == 9'd256) begin
                         tree_stage <= 4'd0;
                     end else begin
-                        scan_addr <= scan_addr + 3'd1;
+                        scan_addr <= scan_addr + 9'd1;
                         for (int i = 0; i < NUM_M10K_BLOCKS; i++) begin
-                            bid_m10k_read_addr[i] <= scan_addr + 3'd1;
-                            ask_m10k_read_addr[i] <= scan_addr + 3'd1;
+                            bid_m10k_read_addr[i] <= scan_addr[7:0] + 8'd1;
+                            ask_m10k_read_addr[i] <= scan_addr[7:0] + 8'd1;
                         end
                     end
                 end

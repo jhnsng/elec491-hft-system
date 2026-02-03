@@ -12,8 +12,8 @@ module orderbook_tb;
     localparam CLK_PERIOD = 10;
     localparam NUM_M10K_BLOCKS = BUFFER_SIZE / 256;
     
-    // Latency calculation: RMW (3) + REDUCE_SCAN (5 cycles: skip first + read 4 addresses) + REDUCE_TREE (5 cycles: 16→8→4→2→1→latch) = 13 cycles
-    localparam ORDER_LATENCY = 13;
+    // Latency calculation: RMW (4 cycles with buffer) + REDUCE_SCAN (257 cycles: skip first + read 256 addresses) + REDUCE_TREE (5 cycles: 16→8→4→2→1→latch) = 266 cycles
+    localparam ORDER_LATENCY = 266;
 
     // DUT signals
     logic                     clk;
@@ -22,8 +22,6 @@ module orderbook_tb;
     logic [PRICE_WIDTH-1:0]   price_in;
     logic [QTY_WIDTH-1:0]     delta_qty_in;
     logic                     valid_in;
-    logic                     valid_out;
-    order_info_t              order_out;
     logic [PRICE_WIDTH-1:0]   best_bid_price;
     logic [QTY_WIDTH-1:0]     best_bid_qty;
     logic                     best_bid_valid;
@@ -49,8 +47,6 @@ module orderbook_tb;
         .price_in(price_in),
         .delta_qty_in(delta_qty_in),
         .valid_in(valid_in),
-        .valid_out(valid_out),
-        .order_out(order_out),
         .best_bid_price(best_bid_price),
         .best_bid_qty(best_bid_qty),
         .best_bid_valid(best_bid_valid),
@@ -130,9 +126,9 @@ module orderbook_tb;
 
     // Main test sequence
     initial begin
-        $display("=== Orderbook Testbench Started (Testing first 4 addresses per block) ===");
-        $display("Valid address ranges: Block_N addresses [N*256 to N*256+3]");
-        $display("Block 0: prices 27963-27966, Block 1: prices 28219-28222, etc.");
+        $display("=== Orderbook Testbench Started (Full 256 address scan per block) ===");
+        $display("Each M10K block scans all 256 addresses");
+        $display("Block 0: prices 27963-28218, Block 1: prices 28219-28474, etc.");
         
         // Initialize signals
         rst_n = 0;
@@ -146,66 +142,74 @@ module orderbook_tb;
         rst_n = 1;
         repeat(2) @(posedge clk);
         
-        $display("\n--- Test 1: Add single bid in Block 0 ---");
+        $display("\n--- Test 1: Add single bid at start of Block 0 ---");
         add_order(SIDE_BID, 27963, 100); // Block 0, addr 0
-        check_best_bid(27963, 100, 1'b1, "Single bid in block 0");
+        check_best_bid(27963, 100, 1'b1, "Single bid at block 0 start");
         
-        $display("\n--- Test 2: Add higher bid in same block ---");
-        add_order(SIDE_BID, 27965, 150); // Block 0, addr 2 (higher price)
-        check_best_bid(27965, 150, 1'b1, "Higher bid in block 0");
+        $display("\n--- Test 2: Add higher bid in middle of Block 0 ---");
+        add_order(SIDE_BID, 28090, 150); // Block 0, addr 127 (middle)
+        check_best_bid(28090, 150, 1'b1, "Higher bid in middle of block 0");
         
-        $display("\n--- Test 3: Add bid in Block 1 (should be highest) ---");
-        add_order(SIDE_BID, 28219, 200); // Block 1, addr 256 (even higher)
-        check_best_bid(28219, 200, 1'b1, "Bid in block 1 is highest");
+        $display("\n--- Test 3: Add bid at end of Block 0 ---");
+        add_order(SIDE_BID, 28218, 200); // Block 0, addr 255 (end)
+        check_best_bid(28218, 200, 1'b1, "Bid at end of block 0 is highest");
         
-        $display("\n--- Test 4: Add even higher bid in Block 2 ---");
-        add_order(SIDE_BID, 28476, 75); // Block 2, addr 513
-        check_best_bid(28476, 75, 1'b1, "Bid in block 2 is highest");
+        $display("\n--- Test 4: Add bid in middle of Block 2 ---");
+        add_order(SIDE_BID, 28603, 75); // Block 2, addr 640 (128 into block 2)
+        check_best_bid(28603, 75, 1'b1, "Bid in block 2 is highest");
         
-        $display("\n--- Test 5: Add ask in Block 1 ---");
-        add_order(SIDE_ASK, 28220, 100); // Block 1, addr 257
-        check_best_ask(28220, 100, 1'b1, "Single ask in block 1");
+        $display("\n--- Test 5: Add ask at start of Block 1 ---");
+        add_order(SIDE_ASK, 28219, 100); // Block 1, addr 256
+        check_best_ask(28219, 100, 1'b1, "Single ask at block 1 start");
         
-        $display("\n--- Test 6: Add lower ask in Block 0 (should be best) ---");
-        add_order(SIDE_ASK, 27964, 125); // Block 0, addr 1 (lower price)
-        check_best_ask(27964, 125, 1'b1, "Lower ask in block 0");
+        $display("\n--- Test 6: Add lower ask near start of Block 0 ---");
+        add_order(SIDE_ASK, 27975, 125); // Block 0, addr 12
+        check_best_ask(27975, 125, 1'b1, "Lower ask near start of block 0");
         
-        $display("\n--- Test 7: Add another ask in Block 0 ---");
-        add_order(SIDE_ASK, 27966, 175); // Block 0, addr 3
-        check_best_ask(27964, 125, 1'b1, "Best ask unchanged");
+        $display("\n--- Test 7: Add another ask in Block 0 (not best) ---");
+        add_order(SIDE_ASK, 28050, 175); // Block 0, addr 87
+        check_best_ask(27975, 125, 1'b1, "Best ask unchanged");
         
-        $display("\n--- Test 8: Update existing bid quantity in Block 1 ---");
-        add_order(SIDE_BID, 28219, 50); // Add to existing at Block 1, addr 256
-        check_best_bid(28476, 75, 1'b1, "Best bid unchanged after qty update");
+        $display("\n--- Test 8: Update existing bid quantity ---");
+        add_order(SIDE_BID, 28218, 50); // Add to existing at Block 0, addr 255
+        check_best_bid(28603, 75, 1'b1, "Best bid unchanged after qty update");
         
         $display("\n--- Test 9: Remove best bid in Block 2 ---");
-        add_order(SIDE_BID, 28476, -75); // Remove Block 2, addr 513
-        check_best_bid(28219, 250, 1'b1, "Best bid now in block 1");
+        add_order(SIDE_BID, 28603, -75); // Remove Block 2, addr 640
+        check_best_bid(28218, 250, 1'b1, "Best bid now at end of block 0");
         
-        $display("\n--- Test 10: Test across multiple blocks ---");
-        add_order(SIDE_BID, 28475, 50);  // Block 2, addr 512
-        add_order(SIDE_BID, 28731, 60);  // Block 3, addr 768
-        add_order(SIDE_BID, 28987, 70);  // Block 4, addr 1024
-        check_best_bid(28987, 70, 1'b1, "Highest bid in block 4");
+        $display("\n--- Test 10: Test across multiple blocks with varied addresses ---");
+        add_order(SIDE_BID, 28550, 50);  // Block 2, addr 587
+        add_order(SIDE_BID, 28800, 60);  // Block 3, addr 837
+        add_order(SIDE_BID, 29100, 70);  // Block 4, addr 1137
+        check_best_bid(29100, 70, 1'b1, "Highest bid in block 4");
         
-        $display("\n--- Test 11: Add asks in multiple blocks ---");
-        add_order(SIDE_ASK, 28477, 40);  // Block 2, addr 514
-        add_order(SIDE_ASK, 28733, 45);  // Block 3, addr 770
-        check_best_ask(27964, 125, 1'b1, "Best ask still in block 0");
+        $display("\n--- Test 11: Add asks at various positions ---");
+        add_order(SIDE_ASK, 28350, 40);  // Block 1, addr 387
+        add_order(SIDE_ASK, 28700, 45);  // Block 2, addr 737
+        check_best_ask(27975, 125, 1'b1, "Best ask still in block 0");
         
         $display("\n--- Test 12: Test spread ---");
         $display("Current spread: %0d (Bid: %0d, Ask: %0d)", 
                  best_ask_price - best_bid_price, best_bid_price, best_ask_price);
         
-        $display("\n--- Test 13: Multiple updates to Block 5 ---");
-        add_order(SIDE_BID, 29243, 100); // Block 5, addr 1280
-        add_order(SIDE_BID, 29244, 100); // Block 5, addr 1281
-        add_order(SIDE_BID, 29245, 100); // Block 5, addr 1282
-        check_best_bid(29245, 100, 1'b1, "Highest bid in block 5");
+        $display("\n--- Test 13: Test high addresses in Block 15 ---");
+        add_order(SIDE_BID, 31900, 100); // Block 15, addr 3937
+        add_order(SIDE_BID, 32000, 150); // Block 15, addr 4037 (high end)
+        check_best_bid(32000, 150, 1'b1, "Highest bid near end of address space");
         
-        $display("\n--- Test 14: Remove best and check new best ---");
-        add_order(SIDE_BID, 29245, -100); // Remove Block 5, addr 1282
-        check_best_bid(29244, 100, 1'b1, "New best after removal");
+        $display("\n--- Test 14: Add ask at very low address ---");
+        add_order(SIDE_ASK, 27964, 80); // Block 0, addr 1
+        check_best_ask(27964, 80, 1'b1, "Lowest ask at start of range");
+        
+        $display("\n--- Test 15: Remove best bid and check fallback ---");
+        add_order(SIDE_BID, 32000, -150); // Remove highest
+        check_best_bid(31900, 100, 1'b1, "Best bid falls back to previous");
+        
+        $display("\n--- Test 16: Test boundary between blocks ---");
+        add_order(SIDE_BID, 28217, 90); // Block 0, addr 254 (near end)
+        add_order(SIDE_BID, 28220, 95); // Block 1, addr 257 (just into block 1)
+        check_best_bid(31900, 100, 1'b1, "Best bid still in block 15");
         
         // Summary
         $display("\n=== Test Summary ===");
@@ -224,7 +228,7 @@ module orderbook_tb;
 
     // Timeout watchdog (increased for longer reduction pipeline)
     initial begin
-        #1000000;  // 1ms timeout (each order takes ~2.6us at 10ns period)
+        #10000000;  // 10ms timeout (each order takes ~2.66us at 10ns period with 266 cycle latency)
         $display("\nERROR: Testbench timeout!");
         $finish;
     end

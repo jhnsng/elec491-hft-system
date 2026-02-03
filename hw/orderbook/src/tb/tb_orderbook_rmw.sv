@@ -21,8 +21,6 @@ module tb_orderbook_rmw;
     logic [PRICE_WIDTH-1:0]   price_in;
     logic [QTY_WIDTH-1:0]     delta_qty_in;
     logic                     valid_in;
-    logic                     valid_out;
-    order_info_t              order_out;
     logic [PRICE_WIDTH-1:0]   best_bid_price;
     logic [QTY_WIDTH-1:0]     best_bid_qty;
     logic                     best_bid_valid;
@@ -49,8 +47,6 @@ module tb_orderbook_rmw;
         .price_in(price_in),
         .delta_qty_in(delta_qty_in),
         .valid_in(valid_in),
-        .valid_out(valid_out),
-        .order_out(order_out),
         .best_bid_price(best_bid_price),
         .best_bid_qty(best_bid_qty),
         .best_bid_valid(best_bid_valid),
@@ -351,55 +347,6 @@ module tb_orderbook_rmw;
         
         verify_result("Test 10c", 300, SIDE_BID, 1500, 1'b1);
         verify_result("Test 10d", 300, SIDE_ASK, 2500, 1'b1);
-        
-        // ====================================
-        // Test 11: State machine timing verification
-        // ====================================
-        $display("\n[TEST 11] State machine timing - verify valid_out pulses");
-        
-        // RMW should assert valid_out in 3 cycles
-        write_order(SIDE_BID, LIMIT_DOWN_PRICE + 400, 100);
-        @(posedge clk);
-        if (!valid_out) begin
-            $display("[INFO] Cycle 1: valid_out = 0 (expected)");
-        end
-        @(posedge clk);
-        if (!valid_out) begin
-            $display("[INFO] Cycle 2: valid_out = 0 (expected)");
-        end
-        @(posedge clk);
-        if (valid_out) begin
-            $display("[PASS] Test 11a: RMW - valid_out asserted in 3 cycles");
-            pass_count++;
-        end else begin
-            $display("[FAIL] Test 11a: RMW - valid_out not asserted in 3 cycles");
-            fail_count++;
-        end
-        test_count++;
-        
-        wait_cycles(2);
-        
-        // Verify another RMW operation
-        write_order(SIDE_BID, LIMIT_DOWN_PRICE + 400, 50);
-        @(posedge clk);
-        if (!valid_out) begin
-            $display("[INFO] Cycle 1: valid_out = 0 (expected)");
-        end
-        @(posedge clk);
-        if (!valid_out) begin
-            $display("[INFO] Cycle 2: valid_out = 0 (expected)");
-        end
-        @(posedge clk);
-        if (valid_out) begin
-            $display("[PASS] Test 11b: RMW - valid_out asserted in 3 cycles");
-            pass_count++;
-        end else begin
-            $display("[FAIL] Test 11b: RMW - valid_out not asserted in 3 cycles");
-            fail_count++;
-        end
-        test_count++;
-        
-        wait_cycles(2);
         
         // ====================================
         // Test Summary
