@@ -7,12 +7,20 @@ module M10K_256_40(
     input we, clk
 );
     // Force M10K ram style with 40-bit width
-    reg [39:0] mem [255:0] /* synthesis ramstyle = "no_rw_check, M10K" */;
+    (* ramstyle = "M10K, no_rw_check" *) reg [39:0] mem [255:0];
+    
+    // Initialize memory to zero for simulation
+    integer i;
+    initial begin
+        for (i = 0; i < 256; i = i + 1) begin
+            mem[i] = 40'd0;
+        end
+    end
     
     always @ (posedge clk) begin
         if (we) begin
             mem[write_address] <= d;
         end
-        q <= mem[read_address]; // 2-cycle read latency (register + read)
+        q <= mem[read_address];
     end
 endmodule

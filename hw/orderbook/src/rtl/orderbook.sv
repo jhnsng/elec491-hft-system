@@ -54,7 +54,7 @@ module orderbook #(
     
     assign write_block_sel = buffer_index[ADDR_MSB:8];
     assign write_block_addr = buffer_index[7:0];
-    
+
     // Instantiate M10K blocks for bid buffer
     genvar blk;
     generate
@@ -82,161 +82,470 @@ module orderbook #(
         end
     endgenerate
     
-    // Buffer read data (registered for 2-cycle read latency)
-    entry_t bid_buffer_read_q [0:BUFFER_SIZE-1];
-    entry_t ask_buffer_read_q [0:BUFFER_SIZE-1];
+    // State machine for read-modify-write and reduction
+    typedef enum logic [2:0] {
+        IDLE,
+        READ_WAIT,
+        MODIFY_WRITE,
+        REDUCE_SCAN,
+        REDUCE_TREE
+    } state_t;
     
-    // Calculate number of reduction stages needed
-    localparam NUM_STAGES = $clog2(BUFFER_SIZE);
+    state_t state, next_state;
     
-    // Reduction tree structures - properly sized for each stage
-    // Stage i has BUFFER_SIZE >> i elements
-    generate
-        genvar s;
-        for (s = 1; s <= NUM_STAGES; s++) begin : gen_reduction_arrays
-            localparam STAGE_SIZE = BUFFER_SIZE >> s;
-            logic bid_stage [0:STAGE_SIZE-1];
-            logic ask_stage [0:STAGE_SIZE-1];
-        end
-    endgenerate
+    // Registered inputs for pipelined operation
+    logic [PRICE_WIDTH-1:0] price_reg;
+    logic signed [QTY_WIDTH-1:0] delta_qty_reg;
+    side_t side_reg;
+    logic [$clog2(NUM_M10K_BLOCKS)-1:0] block_sel_reg;
+    logic [7:0] block_addr_reg;
     
+    // Entry unpacking/packing
+    entry_t current_entry, new_entry;
+    logic signed [QTY_WIDTH-1:0] new_qty_signed;
+    
+    // Best bid/ask structures
+    typedef struct packed {
+        logic [PRICE_WIDTH-1:0] price;
+        logic [QTY_WIDTH-1:0]   qty;
+        logic                   valid;
+    } best_entry_t;
+    
+    // Per-block best (16 blocks) - from scanning first 4 addresses
+    best_entry_t bid_block[0:15];
+    best_entry_t ask_block[0:15];
+    
+    // Reduction tree stages (hard-coded)
+    best_entry_t bid_stage8[0:7];   // 16→8
+    best_entry_t ask_stage8[0:7];
+    best_entry_t bid_stage4[0:3];   // 8→4
+    best_entry_t ask_stage4[0:3];
+    best_entry_t bid_stage2[0:1];   // 4→2
+    best_entry_t ask_stage2[0:1];
+    best_entry_t bid_final;         // 2→1
+    best_entry_t ask_final;
+    
+    // Scan counters
+    logic [2:0] scan_addr;  // 0-4 (only scan first 4 addresses)
+    logic [3:0] tree_stage; // Which reduction stage we're in
+    logic write_done;       // Buffer flag for MODIFY_WRITE state
+    
+    // State machine
     always_ff @(posedge clk) begin
         if (!rst_n) begin
+            state <= IDLE;
+        end else begin
+            state <= next_state;
+        end
+    end
+    
+    always_comb begin
+        next_state = state;
+        case (state)
+            IDLE: begin
+                if (valid_in) begin
+                    next_state = READ_WAIT;
+                end
+            end
+            
+            READ_WAIT: begin
+                next_state = MODIFY_WRITE;
+            end
+            
+            MODIFY_WRITE: begin
+                if (write_done) begin
+                    next_state = REDUCE_SCAN;
+                end
+            end
+            
+            REDUCE_SCAN: begin
+                if (scan_addr == 3'd4) begin  // After reading 4 addresses
+                    next_state = REDUCE_TREE;
+                end
+            end
+            
+            REDUCE_TREE: begin
+                if (tree_stage == 4'd5) begin  // After 5 stages (16→8→4→2→1→done)
+                    next_state = IDLE;
+                end
+            end
+            
+            default: next_state = IDLE;
+        endcase
+    end
+    
+    // Control logic
+    always_ff @(posedge clk) begin
+        if (!rst_n) begin
+            price_reg <= '0;
+            delta_qty_reg <= '0;
+            side_reg <= SIDE_BID;
+            block_sel_reg <= '0;
+            block_addr_reg <= '0;
             valid_out <= 1'b0;
-            // Initialize M10K control signals
+            scan_addr <= '0;
+            tree_stage <= '0;
+            write_done <= 1'b0;
+            
+            // Initialize outputs
+            best_bid_price <= '0;
+            best_bid_qty <= '0;
+            best_bid_valid <= 1'b0;
+            best_ask_price <= '0;
+            best_ask_qty <= '0;
+            best_ask_valid <= 1'b0;
+            
+            // Initialize all control signals
             for (int i = 0; i < NUM_M10K_BLOCKS; i++) begin
                 bid_m10k_we[i] <= 1'b0;
                 ask_m10k_we[i] <= 1'b0;
-                bid_m10k_write_data[i] <= '0;
-                ask_m10k_write_data[i] <= '0;
                 bid_m10k_write_addr[i] <= '0;
                 ask_m10k_write_addr[i] <= '0;
+                bid_m10k_read_addr[i] <= '0;
+                ask_m10k_read_addr[i] <= '0;
+                bid_m10k_write_data[i] <= '0;
+                ask_m10k_write_data[i] <= '0;
+                
+                bid_block[i] <= '{price: '0, qty: '0, valid: 1'b0};
+                ask_block[i] <= '{price: '0, qty: '0, valid: 1'b0};
             end
-        end else begin
-            valid_out <= 1'b0;
             
+        end else begin
             // Default: disable all write enables
             for (int i = 0; i < NUM_M10K_BLOCKS; i++) begin
                 bid_m10k_we[i] <= 1'b0;
                 ask_m10k_we[i] <= 1'b0;
             end
             
-            if (valid_in) begin
-                if (!side_in) begin  // Bid
-                    // Read-modify-write: need to read current value first
-                    // For now, simplified approach - will need state machine for RMW
-                    entry_t current_entry;
-                    current_entry.qty = bid_buffer_read_q[buffer_index].qty + delta_qty_in;
-                    current_entry.valid = (current_entry.qty > 0);
-                    
-                    bid_m10k_write_data[write_block_sel] <= {7'b0, current_entry};  // Pad to 40 bits
-                    bid_m10k_write_addr[write_block_sel] <= write_block_addr;
-                    bid_m10k_we[write_block_sel] <= 1'b1;
-                end else begin  // Ask
-                    entry_t current_entry;
-                    current_entry.qty = ask_buffer_read_q[buffer_index].qty + delta_qty_in;
-                    current_entry.valid = (current_entry.qty > 0);
-                    
-                    ask_m10k_write_data[write_block_sel] <= {7'b0, current_entry};  // Pad to 40 bits
-                    ask_m10k_write_addr[write_block_sel] <= write_block_addr;
-                    ask_m10k_we[write_block_sel] <= 1'b1;
-                end
-            end
+            valid_out <= 1'b0;
             
-            // Continuously read all entries for reduction tree (broadcast read addresses)
-            for (int i = 0; i < NUM_M10K_BLOCKS; i++) begin
-                for (int j = 0; j < 256; j++) begin
-                    automatic int addr_idx = i * 256 + j;
-                    bid_m10k_read_addr[i] <= j[7:0];
-                    ask_m10k_read_addr[i] <= j[7:0];
-                end
-            end
-            
-            // Register M10K read outputs
-            for (int i = 0; i < NUM_M10K_BLOCKS; i++) begin
-                for (int j = 0; j < 256; j++) begin
-                    automatic int addr_idx = i * 256 + j;
-                    if (addr_idx < BUFFER_SIZE) begin
-                        bid_buffer_read_q[addr_idx] <= bid_m10k_read_data[i][32:0];
-                        ask_buffer_read_q[addr_idx] <= ask_m10k_read_data[i][32:0];
+            case (state)
+                IDLE: begin
+                    if (valid_in) begin
+                        // Register inputs
+                        price_reg <= price_in;
+                        delta_qty_reg <= $signed(delta_qty_in);
+                        side_reg <= side_in;
+                        block_sel_reg <= write_block_sel;
+                        block_addr_reg <= write_block_addr;
+                        write_done <= 1'b0;
+                        
+                        // Initiate read
+                        if (side_in == SIDE_BID) begin
+                            bid_m10k_read_addr[write_block_sel] <= write_block_addr;
+                        end else begin
+                            ask_m10k_read_addr[write_block_sel] <= write_block_addr;
+                        end
                     end
                 end
-            end
+                
+                READ_WAIT: begin
+                    // Wait for read data
+                end
+                
+                MODIFY_WRITE: begin
+                    if (!write_done) begin
+                        // Unpack current entry
+                        if (side_reg == SIDE_BID) begin
+                            current_entry = bid_m10k_read_data[block_sel_reg][32:0];
+                        end else begin
+                            current_entry = ask_m10k_read_data[block_sel_reg][32:0];
+                        end
+                        
+                        // Calculate new quantity
+                        new_qty_signed = $signed(current_entry.qty) + delta_qty_reg;
+                        
+                        // Pack new entry with valid bit
+                        if (new_qty_signed > 0) begin
+                            new_entry.qty = new_qty_signed[QTY_WIDTH-1:0];
+                            new_entry.valid = 1'b1;
+                        end else begin
+                            new_entry.qty = '0;
+                            new_entry.valid = 1'b0;
+                        end
+                        
+                        // Write back
+                        if (side_reg == SIDE_BID) begin
+                            bid_m10k_we[block_sel_reg] <= 1'b1;
+                            bid_m10k_write_addr[block_sel_reg] <= block_addr_reg;
+                            bid_m10k_write_data[block_sel_reg] <= {7'b0, new_entry};
+                        end else begin
+                            ask_m10k_we[block_sel_reg] <= 1'b1;
+                            ask_m10k_write_addr[block_sel_reg] <= block_addr_reg;
+                            ask_m10k_write_data[block_sel_reg] <= {7'b0, new_entry};
+                        end
+                        
+                        valid_out <= 1'b1;
+                        write_done <= 1'b1;  // Set flag for next cycle
+                    end else begin
+                        // Second cycle - initialize scan
+                        scan_addr <= 3'd0;
+                        for (int i = 0; i < NUM_M10K_BLOCKS; i++) begin
+                            bid_block[i].valid <= 1'b0;
+                            ask_block[i].valid <= 1'b0;
+                            bid_m10k_read_addr[i] <= 8'd0;
+                            ask_m10k_read_addr[i] <= 8'd0;
+                        end
+                    end
+                end
+                
+                REDUCE_SCAN: begin
+                    // Scan first 4 addresses of each block
+                    if (scan_addr > 3'd0) begin  // Skip first cycle for data ready
+                        for (int i = 0; i < NUM_M10K_BLOCKS; i++) begin
+                            automatic entry_t bid_entry = bid_m10k_read_data[i][32:0];
+                            automatic entry_t ask_entry = ask_m10k_read_data[i][32:0];
+                            automatic logic [PRICE_WIDTH-1:0] bid_price;
+                            automatic logic [PRICE_WIDTH-1:0] ask_price;
+                            
+                            // Calculate price level (scan_addr-1 because data from previous cycle)
+                            bid_price = LIMIT_DOWN_PRICE + (i * 256) + scan_addr - 1;
+                            ask_price = LIMIT_DOWN_PRICE + (i * 256) + scan_addr - 1;
+                            
+                            // Best bid: keep larger price
+                            if (bid_entry.valid && (!bid_block[i].valid || bid_price > bid_block[i].price)) begin
+                                bid_block[i].price <= bid_price;
+                                bid_block[i].qty <= bid_entry.qty;
+                                bid_block[i].valid <= 1'b1;
+                            end
+                            
+                            // Best ask: keep smaller price
+                            if (ask_entry.valid && (!ask_block[i].valid || ask_price < ask_block[i].price)) begin
+                                ask_block[i].price <= ask_price;
+                                ask_block[i].qty <= ask_entry.qty;
+                                ask_block[i].valid <= 1'b1;
+                            end
+                        end
+                    end
+                    
+                    if (scan_addr == 3'd4) begin
+                        tree_stage <= 4'd0;
+                    end else begin
+                        scan_addr <= scan_addr + 3'd1;
+                        for (int i = 0; i < NUM_M10K_BLOCKS; i++) begin
+                            bid_m10k_read_addr[i] <= scan_addr + 3'd1;
+                            ask_m10k_read_addr[i] <= scan_addr + 3'd1;
+                        end
+                    end
+                end
+                
+                REDUCE_TREE: begin
+                    case (tree_stage)
+                        4'd0: begin  // 16→8 reduction
+                            // Hard-coded comparisons
+                            // Compare block[0] vs block[1] → stage8[0]
+                            if (bid_block[1].valid && (!bid_block[0].valid || bid_block[1].price > bid_block[0].price)) begin
+                                bid_stage8[0] <= bid_block[1];
+                            end else begin
+                                bid_stage8[0] <= bid_block[0];
+                            end
+                            if (ask_block[1].valid && (!ask_block[0].valid || ask_block[1].price < ask_block[0].price)) begin
+                                ask_stage8[0] <= ask_block[1];
+                            end else begin
+                                ask_stage8[0] <= ask_block[0];
+                            end
+                            
+                            // block[2] vs block[3] → stage8[1]
+                            if (bid_block[3].valid && (!bid_block[2].valid || bid_block[3].price > bid_block[2].price)) begin
+                                bid_stage8[1] <= bid_block[3];
+                            end else begin
+                                bid_stage8[1] <= bid_block[2];
+                            end
+                            if (ask_block[3].valid && (!ask_block[2].valid || ask_block[3].price < ask_block[2].price)) begin
+                                ask_stage8[1] <= ask_block[3];
+                            end else begin
+                                ask_stage8[1] <= ask_block[2];
+                            end
+                            
+                            // block[4] vs block[5] → stage8[2]
+                            if (bid_block[5].valid && (!bid_block[4].valid || bid_block[5].price > bid_block[4].price)) begin
+                                bid_stage8[2] <= bid_block[5];
+                            end else begin
+                                bid_stage8[2] <= bid_block[4];
+                            end
+                            if (ask_block[5].valid && (!ask_block[4].valid || ask_block[5].price < ask_block[4].price)) begin
+                                ask_stage8[2] <= ask_block[5];
+                            end else begin
+                                ask_stage8[2] <= ask_block[4];
+                            end
+                            
+                            // block[6] vs block[7] → stage8[3]
+                            if (bid_block[7].valid && (!bid_block[6].valid || bid_block[7].price > bid_block[6].price)) begin
+                                bid_stage8[3] <= bid_block[7];
+                            end else begin
+                                bid_stage8[3] <= bid_block[6];
+                            end
+                            if (ask_block[7].valid && (!ask_block[6].valid || ask_block[7].price < ask_block[6].price)) begin
+                                ask_stage8[3] <= ask_block[7];
+                            end else begin
+                                ask_stage8[3] <= ask_block[6];
+                            end
+                            
+                            // block[8] vs block[9] → stage8[4]
+                            if (bid_block[9].valid && (!bid_block[8].valid || bid_block[9].price > bid_block[8].price)) begin
+                                bid_stage8[4] <= bid_block[9];
+                            end else begin
+                                bid_stage8[4] <= bid_block[8];
+                            end
+                            if (ask_block[9].valid && (!ask_block[8].valid || ask_block[9].price < ask_block[8].price)) begin
+                                ask_stage8[4] <= ask_block[9];
+                            end else begin
+                                ask_stage8[4] <= ask_block[8];
+                            end
+                            
+                            // block[10] vs block[11] → stage8[5]
+                            if (bid_block[11].valid && (!bid_block[10].valid || bid_block[11].price > bid_block[10].price)) begin
+                                bid_stage8[5] <= bid_block[11];
+                            end else begin
+                                bid_stage8[5] <= bid_block[10];
+                            end
+                            if (ask_block[11].valid && (!ask_block[10].valid || ask_block[11].price < ask_block[10].price)) begin
+                                ask_stage8[5] <= ask_block[11];
+                            end else begin
+                                ask_stage8[5] <= ask_block[10];
+                            end
+                            
+                            // block[12] vs block[13] → stage8[6]
+                            if (bid_block[13].valid && (!bid_block[12].valid || bid_block[13].price > bid_block[12].price)) begin
+                                bid_stage8[6] <= bid_block[13];
+                            end else begin
+                                bid_stage8[6] <= bid_block[12];
+                            end
+                            if (ask_block[13].valid && (!ask_block[12].valid || ask_block[13].price < ask_block[12].price)) begin
+                                ask_stage8[6] <= ask_block[13];
+                            end else begin
+                                ask_stage8[6] <= ask_block[12];
+                            end
+                            
+                            // block[14] vs block[15] → stage8[7]
+                            if (bid_block[15].valid && (!bid_block[14].valid || bid_block[15].price > bid_block[14].price)) begin
+                                bid_stage8[7] <= bid_block[15];
+                            end else begin
+                                bid_stage8[7] <= bid_block[14];
+                            end
+                            if (ask_block[15].valid && (!ask_block[14].valid || ask_block[15].price < ask_block[14].price)) begin
+                                ask_stage8[7] <= ask_block[15];
+                            end else begin
+                                ask_stage8[7] <= ask_block[14];
+                            end
+                            
+                            tree_stage <= 4'd1;
+                        end
+                        
+                        4'd1: begin  // 8→4 reduction
+                            // stage8[0] vs stage8[1] → stage4[0]
+                            if (bid_stage8[1].valid && (!bid_stage8[0].valid || bid_stage8[1].price > bid_stage8[0].price)) begin
+                                bid_stage4[0] <= bid_stage8[1];
+                            end else begin
+                                bid_stage4[0] <= bid_stage8[0];
+                            end
+                            if (ask_stage8[1].valid && (!ask_stage8[0].valid || ask_stage8[1].price < ask_stage8[0].price)) begin
+                                ask_stage4[0] <= ask_stage8[1];
+                            end else begin
+                                ask_stage4[0] <= ask_stage8[0];
+                            end
+                            
+                            // stage8[2] vs stage8[3] → stage4[1]
+                            if (bid_stage8[3].valid && (!bid_stage8[2].valid || bid_stage8[3].price > bid_stage8[2].price)) begin
+                                bid_stage4[1] <= bid_stage8[3];
+                            end else begin
+                                bid_stage4[1] <= bid_stage8[2];
+                            end
+                            if (ask_stage8[3].valid && (!ask_stage8[2].valid || ask_stage8[3].price < ask_stage8[2].price)) begin
+                                ask_stage4[1] <= ask_stage8[3];
+                            end else begin
+                                ask_stage4[1] <= ask_stage8[2];
+                            end
+                            
+                            // stage8[4] vs stage8[5] → stage4[2]
+                            if (bid_stage8[5].valid && (!bid_stage8[4].valid || bid_stage8[5].price > bid_stage8[4].price)) begin
+                                bid_stage4[2] <= bid_stage8[5];
+                            end else begin
+                                bid_stage4[2] <= bid_stage8[4];
+                            end
+                            if (ask_stage8[5].valid && (!ask_stage8[4].valid || ask_stage8[5].price < ask_stage8[4].price)) begin
+                                ask_stage4[2] <= ask_stage8[5];
+                            end else begin
+                                ask_stage4[2] <= ask_stage8[4];
+                            end
+                            
+                            // stage8[6] vs stage8[7] → stage4[3]
+                            if (bid_stage8[7].valid && (!bid_stage8[6].valid || bid_stage8[7].price > bid_stage8[6].price)) begin
+                                bid_stage4[3] <= bid_stage8[7];
+                            end else begin
+                                bid_stage4[3] <= bid_stage8[6];
+                            end
+                            if (ask_stage8[7].valid && (!ask_stage8[6].valid || ask_stage8[7].price < ask_stage8[6].price)) begin
+                                ask_stage4[3] <= ask_stage8[7];
+                            end else begin
+                                ask_stage4[3] <= ask_stage8[6];
+                            end
+                            
+                            tree_stage <= 4'd2;
+                        end
+                        
+                        4'd2: begin  // 4→2 reduction
+                            // stage4[0] vs stage4[1] → stage2[0]
+                            if (bid_stage4[1].valid && (!bid_stage4[0].valid || bid_stage4[1].price > bid_stage4[0].price)) begin
+                                bid_stage2[0] <= bid_stage4[1];
+                            end else begin
+                                bid_stage2[0] <= bid_stage4[0];
+                            end
+                            if (ask_stage4[1].valid && (!ask_stage4[0].valid || ask_stage4[1].price < ask_stage4[0].price)) begin
+                                ask_stage2[0] <= ask_stage4[1];
+                            end else begin
+                                ask_stage2[0] <= ask_stage4[0];
+                            end
+                            
+                            // stage4[2] vs stage4[3] → stage2[1]
+                            if (bid_stage4[3].valid && (!bid_stage4[2].valid || bid_stage4[3].price > bid_stage4[2].price)) begin
+                                bid_stage2[1] <= bid_stage4[3];
+                            end else begin
+                                bid_stage2[1] <= bid_stage4[2];
+                            end
+                            if (ask_stage4[3].valid && (!ask_stage4[2].valid || ask_stage4[3].price < ask_stage4[2].price)) begin
+                                ask_stage2[1] <= ask_stage4[3];
+                            end else begin
+                                ask_stage2[1] <= ask_stage4[2];
+                            end
+                            
+                            tree_stage <= 4'd3;
+                        end
+                        
+                        4'd3: begin  // 2→1 reduction
+                            // stage2[0] vs stage2[1] → final
+                            if (bid_stage2[1].valid && (!bid_stage2[0].valid || bid_stage2[1].price > bid_stage2[0].price)) begin
+                                bid_final <= bid_stage2[1];
+                            end else begin
+                                bid_final <= bid_stage2[0];
+                            end
+                            if (ask_stage2[1].valid && (!ask_stage2[0].valid || ask_stage2[1].price < ask_stage2[0].price)) begin
+                                ask_final <= ask_stage2[1];
+                            end else begin
+                                ask_final <= ask_stage2[0];
+                            end
+                            
+                            tree_stage <= 4'd4;
+                        end
+                        
+                        4'd4: begin  // Latch outputs
+                            best_bid_price <= bid_final.price;
+                            best_bid_qty <= bid_final.qty;
+                            best_bid_valid <= bid_final.valid;
+                            best_ask_price <= ask_final.price;
+                            best_ask_qty <= ask_final.qty;
+                            best_ask_valid <= ask_final.valid;
+                            
+                            tree_stage <= 4'd5;
+                        end
+                        
+                        default: begin
+                            // Done, transition to IDLE
+                        end
+                    endcase
+                end
+            endcase
         end
     end
-    
-    // Stage 0 (first stage): Compare from bid/ask buffers with masking
-    localparam STAGE1_PAIRS = BUFFER_SIZE >> 1;
-    genvar idx;
-    generate
-        for (idx = 0; idx < STAGE1_PAIRS; idx++) begin : gen_stage0_bid
-            always_comb begin
-                automatic int bid_left_idx = idx * 2;
-                automatic int bid_right_idx = idx * 2 + 1;
-                automatic logic [PRICE_WIDTH-1:0] bid_left_masked_addr;
-                automatic logic [PRICE_WIDTH-1:0] bid_right_masked_addr;
-
-                bid_left_masked_addr = bid_buffer_read_q[bid_left_idx].valid ? bid_left_idx : '0;
-                bid_right_masked_addr = bid_buffer_read_q[bid_right_idx].valid ? bid_right_idx : '0;
-
-                if (bid_left_masked_addr >= bid_right_masked_addr) begin
-                    gen_reduction_arrays[1].bid_stage[idx] = bid_left_idx;
-                end else begin
-                    gen_reduction_arrays[1].bid_stage[idx] = bid_right_idx;
-                end
-            end
-        end
-        
-        for (idx = 0; idx < STAGE1_PAIRS; idx++) begin : gen_stage0_ask
-            always_comb begin
-                automatic int ask_left_idx = idx * 2;
-                automatic int ask_right_idx = idx * 2 + 1;
-                automatic logic [PRICE_WIDTH-1:0] ask_left_masked_addr;
-                automatic logic [PRICE_WIDTH-1:0] ask_right_masked_addr;
-
-                ask_left_masked_addr = ask_buffer_read_q[ask_left_idx].valid ? ask_left_idx : {PRICE_WIDTH{1'b1}};
-                ask_right_masked_addr = ask_buffer_read_q[ask_right_idx].valid ? ask_right_idx : {PRICE_WIDTH{1'b1}};
-
-                if (ask_left_masked_addr <= ask_right_masked_addr) begin
-                    gen_reduction_arrays[1].ask_stage[idx] = ask_left_idx;
-                end else begin
-                    gen_reduction_arrays[1].ask_stage[idx] = ask_right_idx;
-                end
-            end
-        end
-    endgenerate
-    
-    // Remaining stages (stage 1 to NUM_STAGES-1): Compare from previous stage without masking
-    genvar stage, i;
-    generate
-        for (stage = 1; stage < NUM_STAGES; stage++) begin : gen_remaining_stages
-            localparam STAGE_PAIRS = BUFFER_SIZE >> (stage + 1);
-            
-            for (i = 0; i < STAGE_PAIRS; i++) begin : gen_compare
-                always_comb begin
-                    automatic int left_idx = i * 2;
-                    automatic int right_idx = i * 2 + 1;
-                    
-                    if (gen_reduction_arrays[stage].bid_stage[left_idx] >= gen_reduction_arrays[stage].bid_stage[right_idx]) begin
-                        gen_reduction_arrays[stage+1].bid_stage[i] = gen_reduction_arrays[stage].bid_stage[left_idx];
-                    end else begin
-                        gen_reduction_arrays[stage+1].bid_stage[i] = gen_reduction_arrays[stage].bid_stage[right_idx];
-                    end
-                    
-                    if (gen_reduction_arrays[stage].ask_stage[left_idx] <= gen_reduction_arrays[stage].ask_stage[right_idx]) begin
-                        gen_reduction_arrays[stage+1].ask_stage[i] = gen_reduction_arrays[stage].ask_stage[left_idx];
-                    end else begin
-                        gen_reduction_arrays[stage+1].ask_stage[i] = gen_reduction_arrays[stage].ask_stage[right_idx];
-                    end
-                end
-            end
-        end
-    endgenerate
-
-    assign best_bid_price = gen_reduction_arrays[NUM_STAGES].bid_stage[0] + LIMIT_DOWN_PRICE;
-    assign best_bid_qty = bid_buffer_read_q[gen_reduction_arrays[NUM_STAGES].bid_stage[0]].qty;
-    
-    assign best_ask_price = gen_reduction_arrays[NUM_STAGES].ask_stage[0] + LIMIT_DOWN_PRICE;
-    assign best_ask_qty = ask_buffer_read_q[gen_reduction_arrays[NUM_STAGES].ask_stage[0]].qty;
     
 endmodule: orderbook
