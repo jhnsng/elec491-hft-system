@@ -45,7 +45,7 @@ def main():
     price    = 402500
     qty      = 100
 
-    total_msgs = 300
+    total_msgs = 1000
 
     #add = itch_add(order_id, 'B', qty, price)
     #exe = itch_execute(order_id, 40)

@@ -17,7 +17,7 @@
  * ============================================================ */
 #define LISTEN_PORT     12345
 #define MAX_UDP_SIZE    512
-#define WARMUP_PACKETS  10
+#define WARMUP_PACKETS  200
 #define AVG_INTERVAL    50
 
 /* ============================================================
@@ -91,6 +91,13 @@ static int udp_open_and_bind(int port)
         perror("socket");
         return -1;
     }
+
+    /* ------------------------------
+     * Increase UDP receive buffer
+     * ------------------------------ */
+    int rcvbuf = 4 * 1024 * 1024;   // NEW
+    setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
+               &rcvbuf, sizeof(rcvbuf));   // NEW
 
     struct sockaddr_in addr = {0};
     addr.sin_family      = AF_INET;
@@ -210,6 +217,11 @@ int main(void)
         if (expected_len < 0 || n != expected_len)
             continue;
 
+        if (warmup < WARMUP_PACKETS) {
+            warmup++;
+            continue;
+        }
+
         /* ------------------------------
          * Sequence check (A1)
          * ------------------------------ */
@@ -268,11 +280,6 @@ int main(void)
         clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_ordermap);
         fifo_write_update64(fifo, upd);
         clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_fifo);
-
-        if (warmup < WARMUP_PACKETS) {
-            warmup++;
-            continue;
-        }
 
         total_measured++;
 
