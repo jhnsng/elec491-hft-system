@@ -17,8 +17,8 @@
  * ============================================================ */
 #define LISTEN_PORT     12345
 #define MAX_UDP_SIZE    512
-#define WARMUP_PACKETS  10   // Ignore first 10 packets for cold-start
-#define AVG_INTERVAL    50   // Running average every 50 packets
+#define WARMUP_PACKETS  10
+#define AVG_INTERVAL    50
 
 /* ============================================================
  * ITCH validation table
@@ -140,7 +140,6 @@ static inline uint64_t timespec_to_ns(const struct timespec *ts)
     return (uint64_t)ts->tv_sec * 1000000000ULL + (uint64_t)ts->tv_nsec;
 }
 
-
 /* ============================================================
  * Main
  * ============================================================ */
@@ -148,6 +147,10 @@ static inline uint64_t timespec_to_ns(const struct timespec *ts)
 int main(void)
 {
     uint8_t buf[MAX_UDP_SIZE];
+
+    uint32_t expected_seq = 0;
+    uint64_t dropped_pkts = 0;
+    bool seq_initialized = false;
 
     int sock = udp_open_and_bind(LISTEN_PORT);
     if (sock < 0)
@@ -157,10 +160,7 @@ int main(void)
     tv.tv_sec  = 1;
     tv.tv_usec = 0;
 
-    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
-                &tv, sizeof(tv)) < 0) {
-        perror("setsockopt(SO_RCVTIMEO)");
-    }
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     volatile uint32_t *fifo = fifo_map();
     if (!fifo) {
@@ -171,6 +171,7 @@ int main(void)
     printf("NetIO: listening for ITCH UDP on port %d\n", LISTEN_PORT);
 
     int warmup = 0;
+
     uint64_t tot_latency_rx = 0;
     uint64_t tot_latency_parse = 0;
     uint64_t tot_latency_ordermap = 0;
@@ -179,11 +180,9 @@ int main(void)
     uint64_t total_received = 0;
     uint64_t total_measured = 0;
 
-
-    int pkt_count = 0;
-
     while (1) {
-        struct timespec t_rx_start, t_rx_end, t_after_parse, t_after_ordermap, t_after_fifo;
+        struct timespec t_rx_start, t_rx_end;
+        struct timespec t_after_parse, t_after_ordermap, t_after_fifo;
 
         clock_gettime(CLOCK_MONOTONIC_RAW, &t_rx_start);
 
@@ -193,14 +192,14 @@ int main(void)
             if (total_received > 0) {
                 printf("[STALL] recv timeout\n");
                 printf("Final counts: received=%" PRIu64
-                    " measured=%" PRIu64 "\n",
-                    total_received, total_measured);
+                       " measured=%" PRIu64
+                       " dropped=%" PRIu64 "\n",
+                       total_received, total_measured, dropped_pkts);
             }
             continue;
         }
 
         clock_gettime(CLOCK_MONOTONIC_RAW, &t_rx_end);
-
         total_received++;
 
         if (n <= 0)
@@ -208,17 +207,38 @@ int main(void)
 
         uint8_t type = buf[0];
         int expected_len = get_itch_msg_length(type);
-
         if (expected_len < 0 || n != expected_len)
             continue;
+
+        /* ------------------------------
+         * Sequence check (A1)
+         * ------------------------------ */
+        uint32_t seq;
+        memcpy(&seq, &buf[1], 4);
+        seq = ntohl(seq);
+
+        if (!seq_initialized) {
+            expected_seq = seq + 1;
+            seq_initialized = true;
+        } else if (seq != expected_seq) {
+            if (seq > expected_seq) {
+                dropped_pkts += (seq - expected_seq);
+                printf("[DROP] expected=%u got=%u (lost %u)\n",
+                       expected_seq, seq, seq - expected_seq);
+            } else {
+                printf("[REORDER] expected=%u got=%u\n",
+                       expected_seq, seq);
+            }
+            expected_seq = seq + 1;
+        } else {
+            expected_seq++;
+        }
 
         uint64_t order_id;
         uint32_t price;
         uint32_t quantity;
         uint8_t side;
-
         ob_update upd;
-
 
         switch (type) {
 
@@ -229,35 +249,16 @@ int main(void)
             side = buf[19];
 
             clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
-
             upd = order_add(order_id, price, quantity, side);
-
-           // printf("ITCH A: id=%" PRIu64 " upd=0x%016" PRIx64 "\n",
-               //    order_id, upd);
             break;
 
         case 'E':
-            memcpy(&order_id, &buf[11], 8);
-            memcpy(&quantity, &buf[19], 4);
-
-            clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
-
-            upd = order_cancel_execute(order_id, quantity);
-
-            //printf("ITCH E: id=%" PRIu64 " upd=0x%016" PRIx64 "\n",
-             //    order_id, upd);
-            break;
-
         case 'X':
             memcpy(&order_id, &buf[11], 8);
             memcpy(&quantity, &buf[19], 4);
 
             clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
-
             upd = order_cancel_execute(order_id, quantity);
-
-            //printf("ITCH X: id=%" PRIu64 " upd=0x%016" PRIx64 "\n",
-             //     order_id, upd);
             break;
 
         default:
@@ -265,45 +266,37 @@ int main(void)
         }
 
         clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_ordermap);
-
         fifo_write_update64(fifo, upd);
-
         clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_fifo);
-
-        uint64_t latency_rx = timespec_to_ns(&t_rx_end) - timespec_to_ns(&t_rx_start);
-        uint64_t latency_parse = timespec_to_ns(&t_after_parse) - timespec_to_ns(&t_rx_end);
-        uint64_t latency_ordermap = timespec_to_ns(&t_after_ordermap) - timespec_to_ns(&t_after_parse);
-        uint64_t latency_fifo = timespec_to_ns(&t_after_fifo) - timespec_to_ns(&t_after_ordermap);
 
         if (warmup < WARMUP_PACKETS) {
             warmup++;
-            continue; // skip first few packets
+            continue;
         }
 
         total_measured++;
 
-
-        tot_latency_rx += latency_rx;
-        tot_latency_parse += latency_parse;
-        tot_latency_ordermap += latency_ordermap;
-        tot_latency_fifo += latency_fifo;
-
-        //pkt_count++;
+        tot_latency_rx       += timespec_to_ns(&t_rx_end) - timespec_to_ns(&t_rx_start);
+        tot_latency_parse    += timespec_to_ns(&t_after_parse) - timespec_to_ns(&t_rx_end);
+        tot_latency_ordermap += timespec_to_ns(&t_after_ordermap) - timespec_to_ns(&t_after_parse);
+        tot_latency_fifo     += timespec_to_ns(&t_after_fifo) - timespec_to_ns(&t_after_ordermap);
 
         if (total_measured % AVG_INTERVAL == 0) {
-            printf("Latency avg over %d pkts: rx=%" PRIu64 " ns, parse=%" PRIu64 " ns, ordermap=%" PRIu64 " ns, fifo=%" PRIu64" ns\n",
-                AVG_INTERVAL,
-                tot_latency_rx / AVG_INTERVAL,
-                tot_latency_parse / AVG_INTERVAL,
-                tot_latency_ordermap / AVG_INTERVAL,
-                tot_latency_fifo / AVG_INTERVAL );
+            printf("Latency avg over %d pkts: rx=%" PRIu64
+                   " ns, parse=%" PRIu64
+                   " ns, ordermap=%" PRIu64
+                   " ns, fifo=%" PRIu64 " ns\n",
+                   AVG_INTERVAL,
+                   tot_latency_rx / AVG_INTERVAL,
+                   tot_latency_parse / AVG_INTERVAL,
+                   tot_latency_ordermap / AVG_INTERVAL,
+                   tot_latency_fifo / AVG_INTERVAL);
 
             tot_latency_rx = 0;
             tot_latency_parse = 0;
             tot_latency_ordermap = 0;
             tot_latency_fifo = 0;
         }
-
     }
 
     return 0;
