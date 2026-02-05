@@ -8,7 +8,7 @@ module orderbook #(
     parameter M10K_BLOCK_SIZE = 256,  // Size of each M10K block
     parameter NUM_M10K_BLOCKS = BUFFER_SIZE / M10K_BLOCK_SIZE  // Number of M10K blocks needed
 )(
-    input  logic                     CLOCK_50,
+    input  logic                     clk,
     input  logic                     rst_n,
     input  side_t                    side_in,
     input  logic [PRICE_WIDTH-1:0]   price_in,
@@ -23,23 +23,6 @@ module orderbook #(
     output logic [QTY_WIDTH-1:0]     best_ask_qty,
     output logic                     best_ask_valid
 );
-
-    // PLL signals
-    logic clk;              // PLL output clock
-    logic pll_locked;       // PLL lock status
-    logic rst_n_sync;       // Synchronized reset: active when rst_n AND pll_locked
-    
-    // Instantiate PLL
-    pll_ip u_pll (
-        .clk_clk            (CLOCK_50),
-        .reset_reset_n      (rst_n),
-        .pll_0_outclk0_clk  (clk),
-        .pll_0_locked_export(pll_locked)
-    );
-    
-    // Combine external reset with PLL lock status
-    // System stays in reset until PLL is locked and external reset is released
-    assign rst_n_sync = rst_n & pll_locked;
 
     logic [PRICE_WIDTH-1:0] buffer_index;
     always_comb begin
@@ -172,7 +155,7 @@ module orderbook #(
     
     // State machine
     always_ff @(posedge clk) begin
-        if (!rst_n_sync) begin
+        if (!rst_n) begin
             state <= IDLE;
         end else begin
             state <= next_state;
@@ -224,7 +207,7 @@ module orderbook #(
     
     // Control logic
     always_ff @(posedge clk) begin
-        if (!rst_n_sync) begin
+        if (!rst_n) begin
             delta_qty_reg <= '0;
             side_reg <= SIDE_BID;
             block_sel_reg <= '0;
