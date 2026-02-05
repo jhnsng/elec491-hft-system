@@ -201,24 +201,19 @@ output					HPS_USB_STP;
 //=======================================================
 //  REG/WIRE declarations
 //=======================================================
-(* keep *) wire fifo_out_valid;
-(* keep *) wire [31:0] fifo_out_data;
-(* keep *) wire fifo_out_sop;
-(* keep *) wire fifo_out_eop;
-(* keep *) wire [1:0] fifo_out_empty;
-(* keep *) wire fifo_out_ready;
+wire 				fifo_hps_to_fpga_out_valid; 	/* synthesis noprune*/
+wire [31:0] fifo_hps_to_fpga_out_data;		/* synthesis noprune */
+wire 				fifo_hps_to_fpga_out_sop;			/* synthesis noprune */
+wire 				fifo_hps_to_fpga_out_eop;			/* synthesis noprune */
+wire [1:0]  fifo_hps_to_fpga_out_empty;		/* synthesis noprune */
+wire 				fifo_hps_to_fpga_out_ready;		/* synthesis noprune */
 
-//assign fifo_out_ready = 1'b1;
-
-reg [31:0] last_word;
-
-
-assign LEDR[0] = |fifo_out_data;
-assign LEDR[1] = fifo_out_sop & fifo_out_eop;
-assign LEDR[3:2] = fifo_out_empty & fifo_out_valid & fifo_out_ready;
-
-
-
+wire 				fifo_fpga_to_hps_in_valid; 	  /* synthesis noprune*/
+wire [31:0] fifo_fpga_to_hps_in_data;		  /* synthesis noprune */
+wire 				fifo_fpga_to_hps_in_sop;			/* synthesis noprune */
+wire 				fifo_fpga_to_hps_in_eop;			/* synthesis noprune */
+wire [1:0]  fifo_fpga_to_hps_in_empty;		/* synthesis noprune */
+wire 				fifo_fpga_to_hps_in_ready;		/* synthesis noprune */
 
 
 //=======================================================
@@ -240,12 +235,20 @@ hft_top_system The_System (
 	//.clock_bridge_0_in_clk_clk            (CLOCK_50), //(CLOCK_50), 
 	
 	// HPS to FPGA FIFO
-	.fifo_hps_to_fpga_out_valid         (fifo_out_valid),
-  .fifo_hps_to_fpga_out_data          (fifo_out_data),
-  .fifo_hps_to_fpga_out_startofpacket (fifo_out_sop),
-  .fifo_hps_to_fpga_out_endofpacket   (fifo_out_eop), 
-  .fifo_hps_to_fpga_out_empty         (fifo_out_empty),
-  .fifo_hps_to_fpga_out_ready         (fifo_out_ready),
+	.fifo_hps_to_fpga_out_valid         (fifo_hps_to_fpga_out_valid),
+  .fifo_hps_to_fpga_out_data          (fifo_hps_to_fpga_out_data),
+  .fifo_hps_to_fpga_out_startofpacket (fifo_hps_to_fpga_out_sop),
+  .fifo_hps_to_fpga_out_endofpacket   (fifo_hps_to_fpga_out_eop), 
+  .fifo_hps_to_fpga_out_empty         (fifo_hps_to_fpga_out_empty),
+  .fifo_hps_to_fpga_out_ready         (fifo_hps_to_fpga_out_ready),
+
+	// FPGA TO HPS FIFO
+	.fifo_fpga_to_hps_in_valid         (fifo_fpga_to_hps_in_valid),
+  .fifo_fpga_to_hps_in_data          (fifo_fpga_to_hps_in_data),
+  .fifo_fpga_to_hps_in_startofpacket (fifo_fpga_to_hps_in_sop),
+  .fifo_fpga_to_hps_in_endofpacket   (fifo_fpga_to_hps_in_eop), 
+  .fifo_fpga_to_hps_in_empty         (fifo_fpga_to_hps_in_empty),
+  .fifo_fpga_to_hps_in_ready         (fifo_fpga_to_hps_in_ready),
 	
 	////////////////////////////////////
 	// HPS Side
@@ -355,12 +358,12 @@ hft_top_system The_System (
 		.clk            (CLOCK_50),
 		.reset_n        (reset_n),
 
-		.data           (fifo_out_data),
-		.valid          (fifo_out_valid),
-		.startofpacket  (fifo_out_sop),
-		.endofpacket    (fifo_out_eop),
-		.empty          (fifo_out_empty),
-		.ready          (fifo_out_ready)
+		.data           (fifo_hps_to_fpga_out_data),
+		.valid          (fifo_hps_to_fpga_out_valid),
+		.startofpacket  (fifo_hps_to_fpga_out_sop),
+		.endofpacket    (fifo_hps_to_fpga_out_eop),
+		.empty          (fifo_hps_to_fpga_out_empty),
+		.ready          (fifo_hps_to_fpga_out_ready)
 	);
 
 endmodule // end top level
