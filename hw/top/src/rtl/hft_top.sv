@@ -213,7 +213,12 @@ wire [31:0] fifo_fpga_to_hps_in_data;		  /* synthesis noprune */
 wire 				fifo_fpga_to_hps_in_sop;			/* synthesis noprune */
 wire 				fifo_fpga_to_hps_in_eop;			/* synthesis noprune */
 wire [1:0]  fifo_fpga_to_hps_in_empty;		/* synthesis noprune */
-wire 				fifo_fpga_to_hps_in_ready;		/* synthesis noprune */
+logic 			fifo_fpga_to_hps_in_ready		/* synthesis noprune */;
+
+logic [31:0] sop_count;									/* synthesis noprune*/
+logic [31:0] eop_count;									/* synthesis noprune*/
+logic [31:0] seq_error_count;							/* synthesis noprune*/
+logic [31:0] packet_error_count;					/* synthesis noprune*/
 
 
 //=======================================================
@@ -354,7 +359,7 @@ hft_top_system The_System (
 /* ================================
 	Avalon-ST Sink (RTL)
 	================================ */
-	avalon_st_sink u_sink (
+/* 	avalon_st_sink u_sink (
 		.clk            (CLOCK_50),
 		.reset_n        (reset_n),
 
@@ -364,6 +369,36 @@ hft_top_system The_System (
 		.endofpacket    (fifo_hps_to_fpga_out_eop),
 		.empty          (fifo_hps_to_fpga_out_empty),
 		.ready          (fifo_hps_to_fpga_out_ready)
+	); */
+
+  	avalon_st_sink_counter u_sink_counter (
+		.clk            (CLOCK_50),
+		.reset_n        (KEY[0]),
+
+		.data           (fifo_hps_to_fpga_out_data),
+		.valid          (fifo_hps_to_fpga_out_valid),
+		.startofpacket  (fifo_hps_to_fpga_out_sop),
+		.endofpacket    (fifo_hps_to_fpga_out_eop),
+		.empty          (fifo_hps_to_fpga_out_empty),
+		.ready          (fifo_hps_to_fpga_out_ready),
+
+		.sop_count			(sop_count),
+		.eop_count			(eop_count),
+		.seq_error_count	(seq_error_count),
+		.packet_error_count	(packet_error_count)
 	);
+
+	dummy_deadbeef_source u_dummy_deadbeef_source (
+		.clk            (CLOCK_50),
+		.reset_n        (KEY[0]),
+
+		.avalon_st_data           (fifo_fpga_to_hps_in_data),
+		.avalon_st_valid          (fifo_fpga_to_hps_in_valid),
+		.avalon_st_sop  				  (fifo_fpga_to_hps_in_sop),
+		.avalon_st_eop    				(fifo_fpga_to_hps_in_eop),
+		.avalon_st_empty          (fifo_fpga_to_hps_in_empty),
+		.avalon_st_ready          (fifo_fpga_to_hps_in_ready)
+	);
+
 
 endmodule // end top level

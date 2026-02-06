@@ -1,5 +1,11 @@
 
 module hft_top_system (
+	fifo_fpga_to_hps_in_valid,
+	fifo_fpga_to_hps_in_data,
+	fifo_fpga_to_hps_in_startofpacket,
+	fifo_fpga_to_hps_in_endofpacket,
+	fifo_fpga_to_hps_in_empty,
+	fifo_fpga_to_hps_in_ready,
 	fifo_hps_to_fpga_out_valid,
 	fifo_hps_to_fpga_out_data,
 	fifo_hps_to_fpga_out_startofpacket,
@@ -80,14 +86,14 @@ module hft_top_system (
 	memory_oct_rzqin,
 	sdram_clk_clk,
 	system_pll_ref_clk_clk,
-	system_pll_ref_reset_reset,
-	fifo_fpga_to_hps_in_valid,
-	fifo_fpga_to_hps_in_data,
-	fifo_fpga_to_hps_in_startofpacket,
-	fifo_fpga_to_hps_in_endofpacket,
-	fifo_fpga_to_hps_in_empty,
-	fifo_fpga_to_hps_in_ready);	
+	system_pll_ref_reset_reset);	
 
+	input		fifo_fpga_to_hps_in_valid;
+	input	[31:0]	fifo_fpga_to_hps_in_data;
+	input		fifo_fpga_to_hps_in_startofpacket;
+	input		fifo_fpga_to_hps_in_endofpacket;
+	input	[1:0]	fifo_fpga_to_hps_in_empty;
+	output		fifo_fpga_to_hps_in_ready;
 	output		fifo_hps_to_fpga_out_valid;
 	output	[31:0]	fifo_hps_to_fpga_out_data;
 	output		fifo_hps_to_fpga_out_startofpacket;
@@ -169,10 +175,4 @@ module hft_top_system (
 	output		sdram_clk_clk;
 	input		system_pll_ref_clk_clk;
 	input		system_pll_ref_reset_reset;
-	input		fifo_fpga_to_hps_in_valid;
-	input	[31:0]	fifo_fpga_to_hps_in_data;
-	input		fifo_fpga_to_hps_in_startofpacket;
-	input		fifo_fpga_to_hps_in_endofpacket;
-	input	[1:0]	fifo_fpga_to_hps_in_empty;
-	output		fifo_fpga_to_hps_in_ready;
 endmodule

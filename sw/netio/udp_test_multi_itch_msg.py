@@ -59,12 +59,15 @@ def main():
 
         sock.sendto(itch_add(order_id, 'B', qty, price, seq), (DE1_IP, DE1_PORT))
         seq += 1
+        #time.sleep(0.001)
 
         sock.sendto(itch_execute(order_id, 40, seq), (DE1_IP, DE1_PORT))
         seq += 1
+        #time.sleep(0.001)
 
         sock.sendto(itch_cancel(order_id, 60, seq), (DE1_IP, DE1_PORT))
         seq += 1
+        #time.sleep(0.001)
 
         # Optional small delay if needed
         # time.sleep(0.001)

@@ -41,12 +41,28 @@
          type = "String";
       }
    }
+   element fifo_FPGA_to_HPS.out_csr
+   {
+      datum baseAddress
+      {
+         value = "64";
+         type = "String";
+      }
+   }
    element fifo_HPS_to_FPGA
    {
       datum _sortIndex
       {
          value = "2";
          type = "int";
+      }
+   }
+   element fifo_HPS_to_FPGA.in_csr
+   {
+      datum baseAddress
+      {
+         value = "32";
+         type = "String";
       }
    }
 }
@@ -252,7 +268,7 @@
   <parameter name="H2F_AXI_CLOCK_FREQ" value="100" />
   <parameter name="H2F_CTI_CLOCK_FREQ" value="100" />
   <parameter name="H2F_DEBUG_APB_CLOCK_FREQ" value="100" />
-  <parameter name="H2F_LW_AXI_CLOCK_FREQ" value="100000000" />
+  <parameter name="H2F_LW_AXI_CLOCK_FREQ" value="50000000" />
   <parameter name="H2F_TPIU_CLOCK_IN_FREQ" value="100" />
   <parameter name="HARD_EMIF" value="true" />
   <parameter name="HCX_COMPAT_MODE" value="false" />
@@ -639,7 +655,7 @@
   <parameter name="CIV_boards" value="DE2-115" />
   <parameter name="CV_boards" value="DE1-SoC" />
   <parameter name="device_family" value="Cyclone V" />
-  <parameter name="gui_outclk" value="100.0" />
+  <parameter name="gui_outclk" value="50.0" />
   <parameter name="gui_refclk" value="50.0" />
   <parameter name="other_boards" value="None" />
  </module>
@@ -658,13 +674,13 @@
   <parameter name="fifoInputInterfaceOptions" value="AVALONST_SINK" />
   <parameter name="fifoOutputInterfaceOptions" value="AVALONMM_READ" />
   <parameter name="showHiddenFeatures" value="false" />
-  <parameter name="singleClockMode" value="true" />
+  <parameter name="singleClockMode" value="false" />
   <parameter name="singleResetMode" value="false" />
   <parameter name="symbolsPerBeat" value="4" />
   <parameter name="useBackpressure" value="true" />
-  <parameter name="useIRQ" value="true" />
+  <parameter name="useIRQ" value="false" />
   <parameter name="usePacket" value="true" />
-  <parameter name="useReadControl" value="false" />
+  <parameter name="useReadControl" value="true" />
   <parameter name="useRegister" value="false" />
   <parameter name="useWriteControl" value="false" />
  </module>
@@ -683,7 +699,7 @@
   <parameter name="fifoInputInterfaceOptions" value="AVALONMM_WRITE" />
   <parameter name="fifoOutputInterfaceOptions" value="AVALONST_SOURCE" />
   <parameter name="showHiddenFeatures" value="false" />
-  <parameter name="singleClockMode" value="true" />
+  <parameter name="singleClockMode" value="false" />
   <parameter name="singleResetMode" value="false" />
   <parameter name="symbolsPerBeat" value="4" />
   <parameter name="useBackpressure" value="true" />
@@ -691,7 +707,7 @@
   <parameter name="usePacket" value="true" />
   <parameter name="useReadControl" value="false" />
   <parameter name="useRegister" value="false" />
-  <parameter name="useWriteControl" value="false" />
+  <parameter name="useWriteControl" value="true" />
  </module>
  <connection
    kind="avalon"
@@ -706,9 +722,27 @@
    kind="avalon"
    version="16.1"
    start="ARM_A9_HPS.h2f_lw_axi_master"
+   end="fifo_HPS_to_FPGA.in_csr">
+  <parameter name="arbitrationPriority" value="1" />
+  <parameter name="baseAddress" value="0x0020" />
+  <parameter name="defaultConnection" value="false" />
+ </connection>
+ <connection
+   kind="avalon"
+   version="16.1"
+   start="ARM_A9_HPS.h2f_lw_axi_master"
    end="fifo_FPGA_to_HPS.out">
   <parameter name="arbitrationPriority" value="1" />
   <parameter name="baseAddress" value="0x0008" />
+  <parameter name="defaultConnection" value="false" />
+ </connection>
+ <connection
+   kind="avalon"
+   version="16.1"
+   start="ARM_A9_HPS.h2f_lw_axi_master"
+   end="fifo_FPGA_to_HPS.out_csr">
+  <parameter name="arbitrationPriority" value="1" />
+  <parameter name="baseAddress" value="0x0040" />
   <parameter name="defaultConnection" value="false" />
  </connection>
  <connection
@@ -721,6 +755,16 @@
    version="16.1"
    start="System_PLL.sys_clk"
    end="fifo_FPGA_to_HPS.clk_in" />
+ <connection
+   kind="clock"
+   version="16.1"
+   start="System_PLL.sys_clk"
+   end="fifo_HPS_to_FPGA.clk_out" />
+ <connection
+   kind="clock"
+   version="16.1"
+   start="System_PLL.sys_clk"
+   end="fifo_FPGA_to_HPS.clk_out" />
  <connection
    kind="clock"
    version="16.1"
@@ -739,6 +783,16 @@
  <connection
    kind="reset"
    version="16.1"
+   start="ARM_A9_HPS.h2f_reset"
+   end="fifo_FPGA_to_HPS.reset_out" />
+ <connection
+   kind="reset"
+   version="16.1"
+   start="ARM_A9_HPS.h2f_reset"
+   end="fifo_HPS_to_FPGA.reset_out" />
+ <connection
+   kind="reset"
+   version="16.1"
    start="System_PLL.reset_source"
    end="fifo_HPS_to_FPGA.reset_in" />
  <connection
@@ -746,6 +800,16 @@
    version="16.1"
    start="System_PLL.reset_source"
    end="fifo_FPGA_to_HPS.reset_in" />
+ <connection
+   kind="reset"
+   version="16.1"
+   start="System_PLL.reset_source"
+   end="fifo_FPGA_to_HPS.reset_out" />
+ <connection
+   kind="reset"
+   version="16.1"
+   start="System_PLL.reset_source"
+   end="fifo_HPS_to_FPGA.reset_out" />
  <interconnectRequirement for="$system" name="qsys_mm.clockCrossingAdapter" value="HANDSHAKE" />
  <interconnectRequirement for="$system" name="qsys_mm.enableEccProtection" value="FALSE" />
  <interconnectRequirement for="$system" name="qsys_mm.insertDefaultSlave" value="FALSE" />

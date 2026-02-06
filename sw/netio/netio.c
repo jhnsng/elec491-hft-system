@@ -13,6 +13,26 @@
 #include <time.h>
 
 /* ============================================================
+ * FIFO debug / verification
+ * ============================================================ */
+
+/*
+ * When enabled:
+ *   - injects a monotonically increasing sequence number
+ *     into the upper bits of the 64-bit upd
+ *   - used ONLY for FIFO integrity testing
+ *
+ * Disable once FIFO correctness is proven.
+ */
+#define FIFO_DEBUG_ENABLE  1
+
+#if FIFO_DEBUG_ENABLE
+#define FIFO_DEBUG_SEQ_BITS 16
+#define FIFO_DEBUG_SEQ_SHIFT (64 - FIFO_DEBUG_SEQ_BITS)
+#endif
+
+
+/* ============================================================
  * Configuration
  * ============================================================ */
 #define LISTEN_PORT     12345
@@ -50,12 +70,82 @@ static int get_itch_msg_length(uint8_t type)
 
 #define LW_BRIDGE_BASE   0xFF200000
 #define LW_BRIDGE_SPAN   0x1000
+// FIFO Data is at offset 0x00 relative to LW_BRIDGE_BASE
+// FIFO CSR is at offset 0x20 relative to LW_BRIDGE_BASE
+#define FIFO_DATA_OFFSET 0x00
+#define FIFO_CSR_OFFSET  0x20
+
+// FIFO status registers
+// base address is current fifo fill-level
+// base+1 address is status: 
+// --bit0 signals "full"
+// --bit1 signals "empty"
+#define WRITE_FIFO_FILL_LEVEL (*FIFO_write_status_ptr)
+#define WRITE_FIFO_FULL		  ((*(FIFO_write_status_ptr+1))& 1 ) 
+#define WRITE_FIFO_EMPTY	  ((*(FIFO_write_status_ptr+1))& 2 ) 
+
+// HPS_to_FPGA FIFO status address = 0
+volatile unsigned int * FIFO_write_status_ptr = NULL ;
 
 #define FIFO_DATA_REG   0
 #define FIFO_META_REG   1
 
 #define META_SOP        (1 << 0)
 #define META_EOP        (1 << 1)
+
+/* ============================================================
+ * Debug FIFO wrapper
+ * ============================================================ */
+
+/* #if FIFO_DEBUG_ENABLE
+static uint16_t fifo_dbg_seq = 0;
+#endif
+
+static inline void fifo_write_debug_update64(volatile uint32_t *fifo,
+                                             uint64_t upd)
+{
+#if FIFO_DEBUG_ENABLE
+    uint64_t dbg_upd = upd;
+
+    // Inject sequence into upper bits 
+    dbg_upd &= ~(((uint64_t)((1ULL << FIFO_DEBUG_SEQ_BITS) - 1))
+                 << FIFO_DEBUG_SEQ_SHIFT);
+
+    dbg_upd |= ((uint64_t)fifo_dbg_seq << FIFO_DEBUG_SEQ_SHIFT);
+    fifo_dbg_seq++;
+    
+    fifo_write_update64(fifo, dbg_upd);
+#else
+    fifo_write_update64(fifo, upd);
+#endif
+} */
+
+#if FIFO_DEBUG_ENABLE
+static uint16_t fifo_dbg_seq = 0;
+#endif
+
+static void fifo_write_update64(volatile uint32_t *fifo, uint64_t update);
+
+
+static inline void fifo_write_debug_update64(volatile uint32_t *fifo,
+                                             uint64_t upd)
+{
+#if FIFO_DEBUG_ENABLE
+    /* ZERO everything */
+    uint64_t dbg_upd = 0;
+
+    /* Inject sequence into upper bits */
+    dbg_upd |= ((uint64_t)fifo_dbg_seq << FIFO_DEBUG_SEQ_SHIFT);
+    fifo_dbg_seq++;
+
+    fifo_write_update64(fifo, dbg_upd);
+    //usleep(10);
+#else
+    fifo_write_update64(fifo, upd);
+#endif
+}
+
+
 
 static void fifo_write_update64(volatile uint32_t *fifo, uint64_t update)
 {
@@ -177,6 +267,11 @@ int main(void)
 
     printf("NetIO: listening for ITCH UDP on port %d\n", LISTEN_PORT);
 
+    FIFO_write_status_ptr = (unsigned int *)((char*)fifo + 0x20);
+
+    //volatile uint32_t *fifo_data = (volatile uint32_t *)((char *)fifo + FIFO_DATA_OFFSET);
+    //volatile uint32_t *fifo_csr  = (volatile uint32_t *)((char *)fifo + FIFO_CSR_OFFSET);
+
     int warmup = 0;
 
     uint64_t tot_latency_rx = 0;
@@ -187,6 +282,18 @@ int main(void)
     uint64_t total_received = 0;
     uint64_t total_measured = 0;
 
+    /*
+    printf("Bridge base: %p\n", (void*)LW_BRIDGE_BASE);
+    printf("CSR pointer: %p\n", (void*)FIFO_write_status_ptr);
+    printf("Expected CSR address: 0x%lx\n", (unsigned long)((char*)LW_BRIDGE_BASE + 0x20));
+
+    // Sanity test: Write 1 packet, check if fill_level increments
+    printf("Fill level before write: %u\n", WRITE_FIFO_FILL_LEVEL);
+
+    fifo_write_debug_update64(fifo, 0xDEADBEEF);
+
+    printf("Fill level after 1 write: %u\n", WRITE_FIFO_FILL_LEVEL);
+    */
     while (1) {
         struct timespec t_rx_start, t_rx_end;
         struct timespec t_after_parse, t_after_ordermap, t_after_fifo;
@@ -278,7 +385,29 @@ int main(void)
         }
 
         clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_ordermap);
-        fifo_write_update64(fifo, upd);
+        //fifo_write_update64(fifo, upd);
+
+
+
+        // Register Map for "in_csr":
+        // Offset 0: fill_level (How many words are currently in the FIFO)
+        // Offset 1: status (Bit 0 = Full, Bit 1 = Empty, etc.)
+        //uint32_t fill_level = fifo_csr[0]; 
+
+        // If FIFO is nearly full (e.g., depth 8192), wait.
+        // We leave a safety margin (e.g., 50 words) to account for skid.
+        while (WRITE_FIFO_FILL_LEVEL >= (8192 - 64)) {
+            //printf("fill level=%d\n", WRITE_FIFO_FILL_LEVEL);
+        }
+        //printf("fill level=%d\n", WRITE_FIFO_FILL_LEVEL);
+
+        fifo_write_debug_update64(fifo, upd);
+
+        // 2. READ BARRIER (Crucial Step)
+        // Force the bridge to flush writes by reading the Status Register.
+        // We don't even need to check the value, just the ACT of reading acts as a fence.
+        volatile uint32_t dummy = FIFO_write_status_ptr[0];
+        (void)dummy; // Prevent unused variable warning
         clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_fifo);
 
         total_measured++;
