@@ -1,4 +1,4 @@
-
+import _pkg::*;
 
 module hft_top (
 	////////////////////////////////////
@@ -11,6 +11,17 @@ module hft_top (
 	// Pushbuttons
 	KEY,
 	LEDR,
+	
+	// Switches
+	SW,
+	
+	// Seven Segment Displays
+	HEX0,
+	HEX1,
+	HEX2,
+	HEX3,
+	HEX4,
+	HEX5,
 
 
 	////////////////////////////////////
@@ -118,6 +129,17 @@ input			[ 3: 0]	KEY;
 // LEDs
 output		[ 9: 0]	LEDR;
 
+// Switches
+input			[ 9: 0]	SW;
+
+// Seven Segment Displays
+output		[ 6: 0]	HEX0;
+output		[ 6: 0]	HEX1;
+output		[ 6: 0]	HEX2;
+output		[ 6: 0]	HEX3;
+output		[ 6: 0]	HEX4;
+output		[ 6: 0]	HEX5;
+
 ////////////////////////////////////
 // HPS Pins
 ////////////////////////////////////
@@ -213,6 +235,21 @@ wire [31:0] fifo_fpga_to_hps_in_data;		  /* synthesis noprune */
 wire 				fifo_fpga_to_hps_in_sop;			/* synthesis noprune */
 wire 				fifo_fpga_to_hps_in_eop;			/* synthesis noprune */
 wire [1:0]  fifo_fpga_to_hps_in_empty;		/* synthesis noprune */
+wire 				fifo_fpga_to_hps_in_ready;		/* synthesis noprune */
+
+// Avalon-ST sink outputs (from HPS)
+wire        sink_side;
+wire [31:0] sink_price;
+wire [31:0] sink_qty;
+wire        sink_valid;
+
+// Orderbook wires
+wire [31:0] best_bid_price;
+wire [31:0] best_bid_qty;
+wire        best_bid_valid;
+wire [31:0] best_ask_price;
+wire [31:0] best_ask_qty;
+wire        best_ask_valid;
 logic 			fifo_fpga_to_hps_in_ready		/* synthesis noprune */;
 
 logic [31:0] sop_count;									/* synthesis noprune*/
@@ -361,13 +398,75 @@ hft_top_system The_System (
 	================================ */
 /* 	avalon_st_sink u_sink (
 		.clk            (CLOCK_50),
-		.reset_n        (reset_n),
+		.reset_n        (KEY[0]),
 
 		.data           (fifo_hps_to_fpga_out_data),
 		.valid          (fifo_hps_to_fpga_out_valid),
 		.startofpacket  (fifo_hps_to_fpga_out_sop),
 		.endofpacket    (fifo_hps_to_fpga_out_eop),
 		.empty          (fifo_hps_to_fpga_out_empty),
+		.ready          (fifo_hps_to_fpga_out_ready),
+		
+		.side_out       (sink_side),
+		.price_out      (sink_price),
+		.delta_qty_out  (sink_qty),
+		.valid_out      (sink_valid)
+	);
+
+/* ================================
+	Test Controller for Manual Input (DISABLED - using HPS data)
+	================================ */
+	// orderbook_test_controller u_test_ctrl (
+	// 	.clk            (CLOCK_50),
+	// 	.reset_n        (KEY[0]),
+	// 	.SW             (SW),
+	// 	.KEY            (KEY),
+	// 	.LEDR           (LEDR),
+	// 	.side_out       (test_side),
+	// 	.price_out      (test_price),
+	// 	.delta_qty_out  (test_qty),
+	// 	.valid_out      (test_valid)
+	// );
+
+/* ================================
+	Orderbook Module
+	================================ */
+	orderbook u_orderbook (
+		.clk        (CLOCK_50),
+		.rst_n           (KEY[0]),
+		.side_in         (side_t'(sink_side)),
+		.price_in        (sink_price),
+		.delta_qty_in    (sink_qty),
+		.valid_in        (sink_valid),
+		.best_bid_price  (best_bid_price),
+		.best_bid_qty    (best_bid_qty),
+		.best_bid_valid  (best_bid_valid),
+		.best_ask_price  (best_ask_price),
+		.best_ask_qty    (best_ask_qty),
+		.best_ask_valid  (best_ask_valid)
+	);
+
+/* ================================
+	Orderbook Display
+	================================ */
+	orderbook_display u_display (
+		.HEX0            (HEX0),
+		.HEX1            (HEX1),
+		.HEX2            (HEX2),
+		.HEX3            (HEX3),
+		.HEX4            (HEX4),
+		.HEX5            (HEX5),
+		.best_bid_price  (best_bid_price),
+		.best_bid_qty    (best_bid_qty),
+		.best_bid_valid  (best_bid_valid),
+		.best_ask_price  (best_ask_price),
+		.best_ask_qty    (best_ask_qty),
+		.best_ask_valid  (best_ask_valid),
+		.clk             (CLOCK_50),
+		.reset_n         (KEY[0]),
+		.sw_price_qty    (SW[0]),  // SW[0]: 0=Price, 1=Quantity
+		.sw_bid_ask      (SW[1])   // SW[1]: 0=Bid, 1=Ask
+	);
 		.ready          (fifo_hps_to_fpga_out_ready)
 	); */
 
