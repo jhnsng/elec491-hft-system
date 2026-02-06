@@ -98,7 +98,7 @@
    internal="System_PLL.ref_reset"
    type="reset"
    dir="end" />
- <module name="ARM_A9_HPS" kind="altera_hps" version="16.1" enabled="1">
+ <module name="ARM_A9_HPS" kind="altera_hps" version="25.1" enabled="1">
   <parameter name="ABSTRACT_REAL_COMPARE_TEST" value="false" />
   <parameter name="ABS_RAM_MEM_INIT_FILENAME" value="meminit" />
   <parameter name="ACV_PHY_CLK_ADD_FR_PHASE" value="0.0" />
@@ -631,13 +631,14 @@
  <module
    name="System_PLL"
    kind="altera_up_avalon_sys_sdram_pll"
-   version="16.1"
+   version="18.0"
    enabled="1">
   <parameter name="AUTO_DEVICE" value="5CSEMA5F31C6" />
   <parameter name="AUTO_DEVICE_SPEEDGRADE" value="6" />
   <parameter name="CIII_boards" value="DE0" />
   <parameter name="CIV_boards" value="DE2-115" />
   <parameter name="CV_boards" value="DE1-SoC" />
+  <parameter name="MAX10_boards" value="DE10-Lite" />
   <parameter name="device_family" value="Cyclone V" />
   <parameter name="gui_outclk" value="100.0" />
   <parameter name="gui_refclk" value="50.0" />
@@ -646,7 +647,7 @@
  <module
    name="fifo_FPGA_to_HPS"
    kind="altera_avalon_fifo"
-   version="16.1"
+   version="25.1"
    enabled="1">
   <parameter name="avalonMMAvalonMMDataWidth" value="32" />
   <parameter name="avalonMMAvalonSTDataWidth" value="32" />
@@ -671,7 +672,7 @@
  <module
    name="fifo_HPS_to_FPGA"
    kind="altera_avalon_fifo"
-   version="16.1"
+   version="25.1"
    enabled="1">
   <parameter name="avalonMMAvalonMMDataWidth" value="32" />
   <parameter name="avalonMMAvalonSTDataWidth" value="32" />
@@ -695,7 +696,7 @@
  </module>
  <connection
    kind="avalon"
-   version="16.1"
+   version="25.1"
    start="ARM_A9_HPS.h2f_lw_axi_master"
    end="fifo_HPS_to_FPGA.in">
   <parameter name="arbitrationPriority" value="1" />
@@ -704,7 +705,7 @@
  </connection>
  <connection
    kind="avalon"
-   version="16.1"
+   version="25.1"
    start="ARM_A9_HPS.h2f_lw_axi_master"
    end="fifo_FPGA_to_HPS.out">
   <parameter name="arbitrationPriority" value="1" />
@@ -713,37 +714,37 @@
  </connection>
  <connection
    kind="clock"
-   version="16.1"
+   version="25.1"
    start="System_PLL.sys_clk"
    end="fifo_HPS_to_FPGA.clk_in" />
  <connection
    kind="clock"
-   version="16.1"
+   version="25.1"
    start="System_PLL.sys_clk"
    end="fifo_FPGA_to_HPS.clk_in" />
  <connection
    kind="clock"
-   version="16.1"
+   version="25.1"
    start="System_PLL.sys_clk"
    end="ARM_A9_HPS.h2f_lw_axi_clock" />
  <connection
    kind="reset"
-   version="16.1"
+   version="25.1"
    start="ARM_A9_HPS.h2f_reset"
    end="fifo_HPS_to_FPGA.reset_in" />
  <connection
    kind="reset"
-   version="16.1"
+   version="25.1"
    start="ARM_A9_HPS.h2f_reset"
    end="fifo_FPGA_to_HPS.reset_in" />
  <connection
    kind="reset"
-   version="16.1"
+   version="25.1"
    start="System_PLL.reset_source"
    end="fifo_HPS_to_FPGA.reset_in" />
  <connection
    kind="reset"
-   version="16.1"
+   version="25.1"
    start="System_PLL.reset_source"
    end="fifo_FPGA_to_HPS.reset_in" />
  <interconnectRequirement for="$system" name="qsys_mm.clockCrossingAdapter" value="HANDSHAKE" />

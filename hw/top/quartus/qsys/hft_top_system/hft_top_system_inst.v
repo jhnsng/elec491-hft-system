@@ -1,4 +1,10 @@
 	hft_top_system u0 (
+		.fifo_fpga_to_hps_in_valid          (<connected-to-fifo_fpga_to_hps_in_valid>),          //  fifo_fpga_to_hps_in.valid
+		.fifo_fpga_to_hps_in_data           (<connected-to-fifo_fpga_to_hps_in_data>),           //                     .data
+		.fifo_fpga_to_hps_in_startofpacket  (<connected-to-fifo_fpga_to_hps_in_startofpacket>),  //                     .startofpacket
+		.fifo_fpga_to_hps_in_endofpacket    (<connected-to-fifo_fpga_to_hps_in_endofpacket>),    //                     .endofpacket
+		.fifo_fpga_to_hps_in_empty          (<connected-to-fifo_fpga_to_hps_in_empty>),          //                     .empty
+		.fifo_fpga_to_hps_in_ready          (<connected-to-fifo_fpga_to_hps_in_ready>),          //                     .ready
 		.fifo_hps_to_fpga_out_valid         (<connected-to-fifo_hps_to_fpga_out_valid>),         // fifo_hps_to_fpga_out.valid
 		.fifo_hps_to_fpga_out_data          (<connected-to-fifo_hps_to_fpga_out_data>),          //                     .data
 		.fifo_hps_to_fpga_out_startofpacket (<connected-to-fifo_hps_to_fpga_out_startofpacket>), //                     .startofpacket
@@ -79,12 +85,6 @@
 		.memory_oct_rzqin                   (<connected-to-memory_oct_rzqin>),                   //                     .oct_rzqin
 		.sdram_clk_clk                      (<connected-to-sdram_clk_clk>),                      //            sdram_clk.clk
 		.system_pll_ref_clk_clk             (<connected-to-system_pll_ref_clk_clk>),             //   system_pll_ref_clk.clk
-		.system_pll_ref_reset_reset         (<connected-to-system_pll_ref_reset_reset>),         // system_pll_ref_reset.reset
-		.fifo_fpga_to_hps_in_valid          (<connected-to-fifo_fpga_to_hps_in_valid>),          //  fifo_fpga_to_hps_in.valid
-		.fifo_fpga_to_hps_in_data           (<connected-to-fifo_fpga_to_hps_in_data>),           //                     .data
-		.fifo_fpga_to_hps_in_startofpacket  (<connected-to-fifo_fpga_to_hps_in_startofpacket>),  //                     .startofpacket
-		.fifo_fpga_to_hps_in_endofpacket    (<connected-to-fifo_fpga_to_hps_in_endofpacket>),    //                     .endofpacket
-		.fifo_fpga_to_hps_in_empty          (<connected-to-fifo_fpga_to_hps_in_empty>),          //                     .empty
-		.fifo_fpga_to_hps_in_ready          (<connected-to-fifo_fpga_to_hps_in_ready>)           //                     .ready
+		.system_pll_ref_reset_reset         (<connected-to-system_pll_ref_reset_reset>)          // system_pll_ref_reset.reset
 	);
 

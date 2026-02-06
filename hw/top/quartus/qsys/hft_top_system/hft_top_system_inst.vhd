@@ -1,5 +1,11 @@
 	component hft_top_system is
 		port (
+			fifo_fpga_to_hps_in_valid          : in    std_logic                     := 'X';             -- valid
+			fifo_fpga_to_hps_in_data           : in    std_logic_vector(31 downto 0) := (others => 'X'); -- data
+			fifo_fpga_to_hps_in_startofpacket  : in    std_logic                     := 'X';             -- startofpacket
+			fifo_fpga_to_hps_in_endofpacket    : in    std_logic                     := 'X';             -- endofpacket
+			fifo_fpga_to_hps_in_empty          : in    std_logic_vector(1 downto 0)  := (others => 'X'); -- empty
+			fifo_fpga_to_hps_in_ready          : out   std_logic;                                        -- ready
 			fifo_hps_to_fpga_out_valid         : out   std_logic;                                        -- valid
 			fifo_hps_to_fpga_out_data          : out   std_logic_vector(31 downto 0);                    -- data
 			fifo_hps_to_fpga_out_startofpacket : out   std_logic;                                        -- startofpacket
@@ -80,18 +86,18 @@
 			memory_oct_rzqin                   : in    std_logic                     := 'X';             -- oct_rzqin
 			sdram_clk_clk                      : out   std_logic;                                        -- clk
 			system_pll_ref_clk_clk             : in    std_logic                     := 'X';             -- clk
-			system_pll_ref_reset_reset         : in    std_logic                     := 'X';             -- reset
-			fifo_fpga_to_hps_in_valid          : in    std_logic                     := 'X';             -- valid
-			fifo_fpga_to_hps_in_data           : in    std_logic_vector(31 downto 0) := (others => 'X'); -- data
-			fifo_fpga_to_hps_in_startofpacket  : in    std_logic                     := 'X';             -- startofpacket
-			fifo_fpga_to_hps_in_endofpacket    : in    std_logic                     := 'X';             -- endofpacket
-			fifo_fpga_to_hps_in_empty          : in    std_logic_vector(1 downto 0)  := (others => 'X'); -- empty
-			fifo_fpga_to_hps_in_ready          : out   std_logic                                         -- ready
+			system_pll_ref_reset_reset         : in    std_logic                     := 'X'              -- reset
 		);
 	end component hft_top_system;
 
 	u0 : component hft_top_system
 		port map (
+			fifo_fpga_to_hps_in_valid          => CONNECTED_TO_fifo_fpga_to_hps_in_valid,          --  fifo_fpga_to_hps_in.valid
+			fifo_fpga_to_hps_in_data           => CONNECTED_TO_fifo_fpga_to_hps_in_data,           --                     .data
+			fifo_fpga_to_hps_in_startofpacket  => CONNECTED_TO_fifo_fpga_to_hps_in_startofpacket,  --                     .startofpacket
+			fifo_fpga_to_hps_in_endofpacket    => CONNECTED_TO_fifo_fpga_to_hps_in_endofpacket,    --                     .endofpacket
+			fifo_fpga_to_hps_in_empty          => CONNECTED_TO_fifo_fpga_to_hps_in_empty,          --                     .empty
+			fifo_fpga_to_hps_in_ready          => CONNECTED_TO_fifo_fpga_to_hps_in_ready,          --                     .ready
 			fifo_hps_to_fpga_out_valid         => CONNECTED_TO_fifo_hps_to_fpga_out_valid,         -- fifo_hps_to_fpga_out.valid
 			fifo_hps_to_fpga_out_data          => CONNECTED_TO_fifo_hps_to_fpga_out_data,          --                     .data
 			fifo_hps_to_fpga_out_startofpacket => CONNECTED_TO_fifo_hps_to_fpga_out_startofpacket, --                     .startofpacket
@@ -172,12 +178,6 @@
 			memory_oct_rzqin                   => CONNECTED_TO_memory_oct_rzqin,                   --                     .oct_rzqin
 			sdram_clk_clk                      => CONNECTED_TO_sdram_clk_clk,                      --            sdram_clk.clk
 			system_pll_ref_clk_clk             => CONNECTED_TO_system_pll_ref_clk_clk,             --   system_pll_ref_clk.clk
-			system_pll_ref_reset_reset         => CONNECTED_TO_system_pll_ref_reset_reset,         -- system_pll_ref_reset.reset
-			fifo_fpga_to_hps_in_valid          => CONNECTED_TO_fifo_fpga_to_hps_in_valid,          --  fifo_fpga_to_hps_in.valid
-			fifo_fpga_to_hps_in_data           => CONNECTED_TO_fifo_fpga_to_hps_in_data,           --                     .data
-			fifo_fpga_to_hps_in_startofpacket  => CONNECTED_TO_fifo_fpga_to_hps_in_startofpacket,  --                     .startofpacket
-			fifo_fpga_to_hps_in_endofpacket    => CONNECTED_TO_fifo_fpga_to_hps_in_endofpacket,    --                     .endofpacket
-			fifo_fpga_to_hps_in_empty          => CONNECTED_TO_fifo_fpga_to_hps_in_empty,          --                     .empty
-			fifo_fpga_to_hps_in_ready          => CONNECTED_TO_fifo_fpga_to_hps_in_ready           --                     .ready
+			system_pll_ref_reset_reset         => CONNECTED_TO_system_pll_ref_reset_reset          -- system_pll_ref_reset.reset
 		);
 

@@ -408,7 +408,7 @@ set_location_assignment PIN_D11 -to VGA_VS
 #============================================================
 
 
-set_global_assignment -name LAST_QUARTUS_VERSION "16.1.2 Lite Edition"
+set_global_assignment -name LAST_QUARTUS_VERSION "25.1std.0 Lite Edition"
 
 
 set_global_assignment -name MIN_CORE_JUNCTION_TEMP 0
@@ -1131,10 +1131,15 @@ set_instance_assignment -name PACKAGE_SKEW_COMPENSATION OFF -to HPS_DDR3_CK_N
 set_instance_assignment -name CURRENT_STRENGTH_NEW "MINIMUM CURRENT" -to VGA_*
 set_instance_assignment -name FAST_INPUT_REGISTER ON -to *
 set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to *
+set_global_assignment -name SYSTEMVERILOG_FILE ../../orderbook/src/rtl/orderbook_display.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../orderbook/src/rtl/orderbook.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../orderbook/src/rtl/M10K_256_40.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../orderbook/src/rtl/_pkg.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../../netio/src/rtl/avalon_st_sink.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../src/rtl/hft_top.sv
 set_global_assignment -name SDC_FILE hft_top.sdc
 set_global_assignment -name SIGNALTAP_FILE fifo_sanity_test_debug.stp
 set_global_assignment -name QIP_FILE qsys/hft_top_system/synthesis/hft_top_system.qip
-set_instance_assignment -name PARTITION_HIERARCHY root_partition -to | -section_id Top
+set_global_assignment -name SOURCE_FILE db/hft_top.cmp.rdb
 set_global_assignment -name SLD_FILE db/fifo_sanity_test_debug_auto_stripped.stp
+set_instance_assignment -name PARTITION_HIERARCHY root_partition -to | -section_id Top
