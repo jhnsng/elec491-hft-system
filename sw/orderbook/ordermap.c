@@ -36,8 +36,7 @@ typedef struct {
 
 #define MAX_ORDERS 964236
 
-extern order_entry_t order_map[MAX_ORDERS];
-order_entry_t order_map[MAX_ORDERS];
+static order_entry_t order_map[MAX_ORDERS];
 
 ob_update order_add(uint64_t id, uint32_t price,
                     uint32_t qty, uint8_t side)
