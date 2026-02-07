@@ -9,6 +9,11 @@ static inline uint32_t ntohl_manual(uint32_t x) {
            ((x & 0x000000FF) << 24);
 }
 
+// htonl is the same operation as ntohl (both swap bytes)
+static inline uint32_t htonl_manual(uint32_t x) {
+    return ntohl_manual(x);
+}
+
 static inline uint64_t be64toh_manual(uint64_t x) {
     return ((x & 0xFF00000000000000ULL) >> 56) |
            ((x & 0x00FF000000000000ULL) >> 40) |
@@ -59,14 +64,18 @@ ob_update order_cancel_execute(uint64_t id, uint32_t qty)
 {
     // Convert from network byte order (big-endian) to host byte order
     id = be64toh_manual(id);
+    qty = ntohl_manual(qty);  // Convert quantity from big-endian
     
     order_entry_t *e = &order_map[id];
     
-    // Return NEGATIVE quantity for cancel/execute (orderbook will add it)
-    int32_t signed_qty = -(int32_t)qty;
+    // Return NEGATIVE quantity for cancel/execute using two's complement: ~qty + 1
+    uint32_t negated_qty = ~qty + 1;
     
-    // Pack into 64 bits: [side(1bit)][price>>2(31bits)][signed_qty(32bits)]
-    uint64_t packed = ((uint64_t)e->side << 63) | ((uint64_t)(e->price >> 2) << 32) | (uint32_t)signed_qty;
+    // Convert back to big-endian for transmission
+    negated_qty = htonl_manual(negated_qty);
+    
+    // Pack into 64 bits: [side(1bit)][price>>2(31bits)][negated_qty(32bits)]
+    uint64_t packed = ((uint64_t)e->side << 63) | ((uint64_t)(e->price >> 2) << 32) | negated_qty;
     
     if (!e->valid) return packed;
 
