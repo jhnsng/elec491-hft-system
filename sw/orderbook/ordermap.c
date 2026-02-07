@@ -44,7 +44,6 @@ ob_update order_add(uint64_t id, uint32_t price,
     // Convert from network byte order (big-endian) to host byte order
     id = be64toh_manual(id);
     price = ntohl_manual(price);
-    qty = ntohl_manual(qty);
     
     order_entry_t *e = &order_map[id];
     e->price = price;
@@ -60,7 +59,6 @@ ob_update order_cancel_execute(uint64_t id, uint32_t qty)
 {
     // Convert from network byte order (big-endian) to host byte order
     id = be64toh_manual(id);
-    qty = ntohl_manual(qty);
     
     order_entry_t *e = &order_map[id];
     

@@ -126,10 +126,13 @@ module avalon_st_sink (
                         // Capture second word and decode
                         high_word <= data;
                         
-                        // Extract side (bit 31) and price (bits 29:0, left-shifted by 2)
-                        // Original 32-bit price >> 2 gives 30 significant bits, stored in data[29:0]
-                        side_reg <= data[31];
-                        price_reg <= {data[29:0], 2'b00};  // 30 bits + 2 bit shift = 32 bits
+                        // Byte swap from big-endian to little-endian
+                        // Input data: 0x581b0000 = [31:24]=0x58, [23:16]=0x1b, [15:8]=0x00, [7:0]=0x00
+                        // Swapped: 0x00001b58 = [31:24]=0x00, [23:16]=0x00, [15:8]=0x1b, [7:0]=0x58
+                        // Bit reordering: {data[7:0], data[15:8], data[23:16], data[31:24]}
+                        
+                        side_reg <= data[7];  // MSB of swapped data (bit 31 after swap)
+                        price_reg <= {data[5:0], data[15:8], data[23:16], 2'b00};  // Bits [29:0] of swapped, then << 2
                         delta_qty_reg <= low_word;
                         
                         // Assert valid output
