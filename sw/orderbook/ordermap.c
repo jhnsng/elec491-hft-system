@@ -22,6 +22,10 @@ static order_entry_t order_map[MAX_ORDERS];
 ob_update order_add(uint64_t id, uint32_t price,
                     uint32_t qty, uint8_t side)
 {
+    // Convert from network byte order (big-endian) to host byte order
+    id = be64toh_manual(id);
+    price = ntohl_manual(price);
+    
     order_entry_t *e = &order_map[id];
     e->price = price;
     e->qty   = qty;
@@ -34,6 +38,9 @@ ob_update order_add(uint64_t id, uint32_t price,
 
 ob_update order_cancel_execute(uint64_t id, uint32_t qty)
 {
+    // Convert from network byte order (big-endian) to host byte order
+    id = be64toh_manual(id);
+    
     order_entry_t *e = &order_map[id];
     
     // Pack into 64 bits: [side(1bit)][price>>2(31bits)][qty(32bits)]
