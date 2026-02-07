@@ -111,6 +111,31 @@ void test_memory_size() {
     printf("  Total memory: %zu bytes (%.2f MB)\n", total_size, total_size / (1024.0 * 1024.0));
 }
 
+void test_specific_order() {
+    printf("Test 7: Specific order (ID=1, Buy, Price=28000, Qty=100)...\n");
+    ob_update upd = order_add(1, 28000, 100, 'B');
+
+    // Expected: side=0, price>>2=7000(0x1B58), qty=100(0x64)
+    // Full 64-bit: 0x00001B5800000064
+
+    assert(OB_UPDATE_GET_PRICE(upd) == 28000);
+    assert(OB_UPDATE_GET_QTY(upd) == 100);
+    assert(OB_UPDATE_GET_SIDE(upd) == 0);  // Buy = 0
+    assert(order_map[1].price == 28000);
+    assert(order_map[1].qty == 100);
+    assert(order_map[1].side == 0);
+    assert(order_map[1].valid == 1);
+
+    printf("  Price: 28000 (0x6D60)\n");
+    printf("  Price >> 2: 7000 (0x1B58)\n");
+    printf("  Quantity: 100 (0x64)\n");
+    printf("  Packed value: 0x%016llX\n", upd);
+    printf("  Expected:     0x00001B5800000064\n");
+    assert(upd == 0x00001B5800000064ULL);
+
+    printf("  ✓ Specific order matches expected values\n");
+}
+
 int main() {
     printf("=== OrderMap Test Suite ===\n\n");
     
@@ -120,6 +145,7 @@ int main() {
     test_full_cancel();
     test_over_cancel();
     test_memory_size();
+    test_specific_order();
     
     printf("\n✓ All tests passed!\n");
     return 0;
