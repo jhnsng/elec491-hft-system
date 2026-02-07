@@ -13,10 +13,10 @@ module avalon_st_sink (
     input  logic [1:0]  empty,
     
     // Orderbook interface
-    output logic        side_out,
-    output logic [31:0] price_out,
-    output logic [31:0] delta_qty_out,
-    output logic        valid_out
+    output logic               side_out,
+    output logic [31:0]        price_out,
+    output logic signed [31:0] delta_qty_out,  // Signed: positive=add, negative=cancel/execute
+    output logic               valid_out
 );
 
     // FSM states
@@ -33,10 +33,10 @@ module avalon_st_sink (
     logic [31:0] high_word;  // Second word (side + price>>2)
     
     // Output registers
-    logic        side_reg;
-    logic [31:0] price_reg;
-    logic [31:0] delta_qty_reg;
-    logic        valid_reg;
+    logic               side_reg;
+    logic [31:0]        price_reg;
+    logic signed [31:0] delta_qty_reg;  // Signed for cancel/execute
+    logic               valid_reg;
     
     // Error tracking
     logic        error_flag;
@@ -132,7 +132,7 @@ module avalon_st_sink (
                         // Bit reordering: {data[7:0], data[15:8], data[23:16], data[31:24]}
                         
                         side_reg <= data[7];  // MSB of swapped data (bit 31 after swap)
-                        price_reg <= {data[5:0], data[15:8], data[23:16], 2'b00};  // Bits [29:0] of swapped, then << 2
+                        price_reg <= {data[5:0], data[15:8], data[23:16], data[31:24], 2'b00};  // Bits [29:0] of swapped, then << 2
                         delta_qty_reg <= low_word;
                         
                         // Assert valid output

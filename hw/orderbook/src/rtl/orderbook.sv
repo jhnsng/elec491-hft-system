@@ -8,12 +8,12 @@ module orderbook #(
     parameter M10K_BLOCK_SIZE = 256,  // Size of each M10K block
     parameter NUM_M10K_BLOCKS = BUFFER_SIZE / M10K_BLOCK_SIZE  // Number of M10K blocks needed
 )(
-    input  logic                     clk,
-    input  logic                     rst_n,
-    input  side_t                    side_in,
-    input  logic [PRICE_WIDTH-1:0]   price_in,
-    input  logic [QTY_WIDTH-1:0]     delta_qty_in,
-    input  logic                     valid_in,
+    input  logic                           clk,
+    input  logic                           rst_n,
+    input  side_t                          side_in,
+    input  logic [PRICE_WIDTH-1:0]         price_in,
+    input  logic signed [QTY_WIDTH-1:0]    delta_qty_in,  // Signed: positive=add, negative=cancel
+    input  logic                           valid_in,
     // Best bid outputs
     output logic [PRICE_WIDTH-1:0]   best_bid_price,
     output logic [QTY_WIDTH-1:0]     best_bid_qty,
@@ -25,8 +25,12 @@ module orderbook #(
 );
 
     logic [PRICE_WIDTH-1:0] buffer_index;
+    logic price_in_range;
+    
     always_comb begin
         buffer_index = (price_in - LIMIT_DOWN_PRICE);
+        // Check if price is within valid range [LIMIT_DOWN_PRICE, LIMIT_DOWN_PRICE + BUFFER_SIZE - 1]
+        price_in_range = (price_in >= LIMIT_DOWN_PRICE) && (buffer_index < BUFFER_SIZE);
     end
 
     typedef struct packed {
@@ -115,7 +119,7 @@ module orderbook #(
     state_t state, next_state;
     
     // Registered inputs for pipelined operation
-    logic signed [QTY_WIDTH-1:0] delta_qty_reg;
+    logic signed [QTY_WIDTH-1:0] delta_qty_reg;  // Signed delta
     side_t side_reg;
     logic [$clog2(NUM_M10K_BLOCKS)-1:0] block_sel_reg;
     logic [7:0] block_addr_reg;
@@ -166,7 +170,7 @@ module orderbook #(
         next_state = state;
         case (state)
             IDLE: begin
-                if (valid_in) begin
+                if (valid_in && price_in_range) begin
                     next_state = READ_START;
                 end
             end
@@ -251,7 +255,7 @@ module orderbook #(
             
             case (state)
                 IDLE: begin
-                    if (valid_in) begin
+                    if (valid_in && price_in_range) begin
                         // Register inputs
                         delta_qty_reg <= $signed(delta_qty_in);
                         side_reg <= side_in;

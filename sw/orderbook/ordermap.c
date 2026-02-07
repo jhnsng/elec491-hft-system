@@ -62,8 +62,11 @@ ob_update order_cancel_execute(uint64_t id, uint32_t qty)
     
     order_entry_t *e = &order_map[id];
     
-    // Pack into 64 bits: [side(1bit)][price>>2(31bits)][qty(32bits)]
-    uint64_t packed = ((uint64_t)e->side << 63) | ((uint64_t)(e->price >> 2) << 32) | qty;
+    // Return NEGATIVE quantity for cancel/execute (orderbook will add it)
+    int32_t signed_qty = -(int32_t)qty;
+    
+    // Pack into 64 bits: [side(1bit)][price>>2(31bits)][signed_qty(32bits)]
+    uint64_t packed = ((uint64_t)e->side << 63) | ((uint64_t)(e->price >> 2) << 32) | (uint32_t)signed_qty;
     
     if (!e->valid) return packed;
 
