@@ -24,7 +24,7 @@
  *
  * Disable once FIFO correctness is proven.
  */
-#define FIFO_DEBUG_ENABLE  0
+#define FIFO_DEBUG_ENABLE  1
 
 #if FIFO_DEBUG_ENABLE
 #define FIFO_DEBUG_SEQ_BITS 16
@@ -37,7 +37,7 @@
  * ============================================================ */
 #define LISTEN_PORT     12345
 #define MAX_UDP_SIZE    512
-#define WARMUP_PACKETS  0
+#define WARMUP_PACKETS  200
 #define AVG_INTERVAL    50
 
 /* ============================================================
@@ -304,11 +304,11 @@ int main(void)
 
         if (n < 0 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
             if (total_received > 0) {
-                //printf("[STALL] recv timeout\n");
-                //printf("Final counts: received=%" PRIu64
-                //       " measured=%" PRIu64
-                //       " dropped=%" PRIu64 "\n",
-                //       total_received, total_measured, dropped_pkts);
+                printf("[STALL] recv timeout\n");
+                printf("Final counts: received=%" PRIu64
+                       " measured=%" PRIu64
+                       " dropped=%" PRIu64 "\n",
+                       total_received, total_measured, dropped_pkts);
             }
             continue;
         }
@@ -369,10 +369,6 @@ int main(void)
 
             clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
             upd = order_add(order_id, price, quantity, side);
-
-            printf("order_add: id=0x%016" PRIx64 ", price=0x%" PRIx32 ", qty=0x%" PRIx32 ", side=%c\n",
-                order_id, price, quantity, side);
-
             break;
 
         case 'E':
@@ -381,14 +377,7 @@ int main(void)
             memcpy(&quantity, &buf[19], 4);
 
             clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
-
-            printf("order_cancel: id=0x%016" PRIx64 ", qty=0x%" PRIx32 ",\n",
-                order_id, quantity);
-                
             upd = order_cancel_execute(order_id, quantity);
-
-            
-
             break;
 
         default:
@@ -397,8 +386,6 @@ int main(void)
 
         clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_ordermap);
         //fifo_write_update64(fifo, upd);
-
-        printf("ordermap output=0x%016" PRIx64 "\n", upd);
 
 
 
