@@ -395,7 +395,7 @@ hft_top_system The_System (
 /* ================================
 	Avalon-ST Sink (RTL)
 	================================ */
- 	avalon_st_sink u_sink (
+ /*	avalon_st_sink u_sink (
 		.clk            (CLOCK_50),
 		.reset_n        (KEY[0]),
 
@@ -411,6 +411,7 @@ hft_top_system The_System (
 		.delta_qty_out  (sink_qty),
 		.valid_out      (sink_valid)
 	);
+*/
 
 /* ================================
 	Test Controller for Manual Input (DISABLED - using HPS data)
@@ -430,7 +431,7 @@ hft_top_system The_System (
 /* ================================
 	Orderbook Module
 	================================ */
-	orderbook u_orderbook (
+/*	orderbook u_orderbook (
 		.clk        (CLOCK_50),
 		.rst_n           (KEY[0]),
 		.side_in         (side_t'(sink_side)),
@@ -444,10 +445,12 @@ hft_top_system The_System (
 		.best_ask_qty    (best_ask_qty),
 		.best_ask_valid  (best_ask_valid)
 	);
+	*/
 
 /* ================================
 	Orderbook Display
 	================================ */
+	/*
 	orderbook_display u_display (
 		.HEX0            (HEX0),
 		.HEX1            (HEX1),
@@ -466,8 +469,8 @@ hft_top_system The_System (
 		.sw_price_qty    (SW[0]),  // SW[0]: 0=Price, 1=Quantity
 		.sw_bid_ask      (SW[1])   // SW[1]: 0=Bid, 1=Ask
 	);
-
-/* 
+*/
+ 
   	avalon_st_sink_counter u_sink_counter (
 		.clk            (CLOCK_50),
 		.reset_n        (KEY[0]),
@@ -483,7 +486,7 @@ hft_top_system The_System (
 		.eop_count			(eop_count),
 		.seq_error_count	(seq_error_count),
 		.packet_error_count	(packet_error_count)
-	); */
+	);
 
 	/* dummy_deadbeef_source u_dummy_deadbeef_source (
 		.clk            (CLOCK_50),
