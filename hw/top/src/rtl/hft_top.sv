@@ -236,6 +236,14 @@ wire 				fifo_fpga_to_hps_in_sop;			/* synthesis noprune */
 wire 				fifo_fpga_to_hps_in_eop;			/* synthesis noprune */
 wire [1:0]  fifo_fpga_to_hps_in_empty;		/* synthesis noprune */
 wire 				fifo_fpga_to_hps_in_ready;		/* synthesis noprune */
+
+wire 				fifo_ouch_ingress_out_valid; 	/* synthesis noprune*/
+wire [31:0] fifo_ouch_ingress_out_data;		/* synthesis noprune */
+wire 				fifo_ouch_ingress_out_sop;			/* synthesis noprune */
+wire 				fifo_ouch_ingress_out_eop;			/* synthesis noprune */
+wire [1:0]  fifo_ouch_ingress_out_empty;		/* synthesis noprune */
+wire 				fifo_ouch_ingress_out_ready;		/* synthesis noprune */
+
 logic [31:0] sop_count;									/* synthesis noprune*/
 logic [31:0] eop_count;									/* synthesis noprune*/
 logic [31:0] seq_error_count;							/* synthesis noprune*/
@@ -290,6 +298,14 @@ hft_top_system The_System (
   .fifo_fpga_to_hps_in_endofpacket   (fifo_fpga_to_hps_in_eop), 
   .fifo_fpga_to_hps_in_empty         (fifo_fpga_to_hps_in_empty),
   .fifo_fpga_to_hps_in_ready         (fifo_fpga_to_hps_in_ready),
+
+	// HPS to FPGA OUCH FIFO
+	.fifo_ouch_ingress_out_valid         (fifo_ouch_ingress_out_valid),
+  .fifo_ouch_ingress_out_data          (fifo_ouch_ingress_out_data),
+  .fifo_ouch_ingress_out_startofpacket (fifo_ouch_ingress_out_sop),
+  .fifo_ouch_ingress_out_endofpacket   (fifo_ouch_ingress_out_eop), 
+  .fifo_ouch_ingress_out_empty         (fifo_ouch_ingress_out_empty),
+  .fifo_ouch_ingress_out_ready         (fifo_ouch_ingress_out_ready),
 	
 	////////////////////////////////////
 	// HPS Side
@@ -475,20 +491,21 @@ hft_top_system The_System (
 		.clk            (CLOCK_50),
 		.reset_n        (KEY[0]),
 
-		.data           (fifo_hps_to_fpga_out_data),
-		.valid          (fifo_hps_to_fpga_out_valid),
-		.startofpacket  (fifo_hps_to_fpga_out_sop),
-		.endofpacket    (fifo_hps_to_fpga_out_eop),
-		.empty          (fifo_hps_to_fpga_out_empty),
-		.ready          (fifo_hps_to_fpga_out_ready),
+		.data           (fifo_ouch_ingress_out_data),
+		.valid          (fifo_ouch_ingress_out_valid),
+		.startofpacket  (fifo_ouch_ingress_out_sop),
+		.endofpacket    (fifo_ouch_ingress_out_eop),
+		.empty          (fifo_ouch_ingress_out_empty),
+		.ready          (fifo_ouch_ingress_out_ready),
 
 		.sop_count			(sop_count),
 		.eop_count			(eop_count),
 		.seq_error_count	(seq_error_count),
 		.packet_error_count	(packet_error_count)
 	);
+	
 
-	/* dummy_deadbeef_source u_dummy_deadbeef_source (
+/* 	 dummy_deadbeef_source u_dummy_deadbeef_source (
 		.clk            (CLOCK_50),
 		.reset_n        (KEY[0]),
 
@@ -499,6 +516,5 @@ hft_top_system The_System (
 		.avalon_st_empty          (fifo_fpga_to_hps_in_empty),
 		.avalon_st_ready          (fifo_fpga_to_hps_in_ready)
 	); */
-
 
 endmodule // end top level
