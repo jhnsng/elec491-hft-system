@@ -65,6 +65,35 @@
          type = "String";
       }
    }
+   element fifo_OUCH_ingress
+   {
+      datum _sortIndex
+      {
+         value = "4";
+         type = "int";
+      }
+   }
+   element fifo_OUCH_ingress.in
+   {
+      datum _lockedAddress
+      {
+         value = "0";
+         type = "boolean";
+      }
+      datum baseAddress
+      {
+         value = "16";
+         type = "String";
+      }
+   }
+   element fifo_OUCH_ingress.in_csr
+   {
+      datum baseAddress
+      {
+         value = "96";
+         type = "String";
+      }
+   }
 }
 ]]></parameter>
  <parameter name="clockCrossingAdapter" value="HANDSHAKE" />
@@ -97,6 +126,11 @@
    type="avalon_streaming"
    dir="start" />
  <interface name="fifo_hps_to_fpga_out_csr" internal="fifo_HPS_to_FPGA.out_csr" />
+ <interface
+   name="fifo_ouch_ingress_out"
+   internal="fifo_OUCH_ingress.out"
+   type="avalon_streaming"
+   dir="start" />
  <interface name="hps_io" internal="ARM_A9_HPS.hps_io" type="conduit" dir="end" />
  <interface name="memory" internal="ARM_A9_HPS.memory" type="conduit" dir="end" />
  <interface
@@ -709,6 +743,31 @@
   <parameter name="useRegister" value="false" />
   <parameter name="useWriteControl" value="true" />
  </module>
+ <module
+   name="fifo_OUCH_ingress"
+   kind="altera_avalon_fifo"
+   version="16.1"
+   enabled="1">
+  <parameter name="avalonMMAvalonMMDataWidth" value="32" />
+  <parameter name="avalonMMAvalonSTDataWidth" value="32" />
+  <parameter name="bitsPerSymbol" value="8" />
+  <parameter name="channelWidth" value="0" />
+  <parameter name="deviceFamilyString" value="Cyclone V" />
+  <parameter name="errorWidth" value="0" />
+  <parameter name="fifoDepth" value="256" />
+  <parameter name="fifoInputInterfaceOptions" value="AVALONMM_WRITE" />
+  <parameter name="fifoOutputInterfaceOptions" value="AVALONST_SOURCE" />
+  <parameter name="showHiddenFeatures" value="false" />
+  <parameter name="singleClockMode" value="false" />
+  <parameter name="singleResetMode" value="false" />
+  <parameter name="symbolsPerBeat" value="4" />
+  <parameter name="useBackpressure" value="true" />
+  <parameter name="useIRQ" value="false" />
+  <parameter name="usePacket" value="true" />
+  <parameter name="useReadControl" value="false" />
+  <parameter name="useRegister" value="false" />
+  <parameter name="useWriteControl" value="true" />
+ </module>
  <connection
    kind="avalon"
    version="16.1"
@@ -722,9 +781,27 @@
    kind="avalon"
    version="16.1"
    start="ARM_A9_HPS.h2f_lw_axi_master"
+   end="fifo_OUCH_ingress.in">
+  <parameter name="arbitrationPriority" value="1" />
+  <parameter name="baseAddress" value="0x0010" />
+  <parameter name="defaultConnection" value="false" />
+ </connection>
+ <connection
+   kind="avalon"
+   version="16.1"
+   start="ARM_A9_HPS.h2f_lw_axi_master"
    end="fifo_HPS_to_FPGA.in_csr">
   <parameter name="arbitrationPriority" value="1" />
   <parameter name="baseAddress" value="0x0020" />
+  <parameter name="defaultConnection" value="false" />
+ </connection>
+ <connection
+   kind="avalon"
+   version="16.1"
+   start="ARM_A9_HPS.h2f_lw_axi_master"
+   end="fifo_OUCH_ingress.in_csr">
+  <parameter name="arbitrationPriority" value="1" />
+  <parameter name="baseAddress" value="0x0060" />
   <parameter name="defaultConnection" value="false" />
  </connection>
  <connection
@@ -759,12 +836,22 @@
    kind="clock"
    version="16.1"
    start="System_PLL.sys_clk"
+   end="fifo_OUCH_ingress.clk_in" />
+ <connection
+   kind="clock"
+   version="16.1"
+   start="System_PLL.sys_clk"
    end="fifo_HPS_to_FPGA.clk_out" />
  <connection
    kind="clock"
    version="16.1"
    start="System_PLL.sys_clk"
    end="fifo_FPGA_to_HPS.clk_out" />
+ <connection
+   kind="clock"
+   version="16.1"
+   start="System_PLL.sys_clk"
+   end="fifo_OUCH_ingress.clk_out" />
  <connection
    kind="clock"
    version="16.1"
@@ -784,12 +871,22 @@
    kind="reset"
    version="16.1"
    start="ARM_A9_HPS.h2f_reset"
+   end="fifo_OUCH_ingress.reset_in" />
+ <connection
+   kind="reset"
+   version="16.1"
+   start="ARM_A9_HPS.h2f_reset"
    end="fifo_FPGA_to_HPS.reset_out" />
  <connection
    kind="reset"
    version="16.1"
    start="ARM_A9_HPS.h2f_reset"
    end="fifo_HPS_to_FPGA.reset_out" />
+ <connection
+   kind="reset"
+   version="16.1"
+   start="ARM_A9_HPS.h2f_reset"
+   end="fifo_OUCH_ingress.reset_out" />
  <connection
    kind="reset"
    version="16.1"
@@ -804,12 +901,22 @@
    kind="reset"
    version="16.1"
    start="System_PLL.reset_source"
+   end="fifo_OUCH_ingress.reset_in" />
+ <connection
+   kind="reset"
+   version="16.1"
+   start="System_PLL.reset_source"
    end="fifo_FPGA_to_HPS.reset_out" />
  <connection
    kind="reset"
    version="16.1"
    start="System_PLL.reset_source"
    end="fifo_HPS_to_FPGA.reset_out" />
+ <connection
+   kind="reset"
+   version="16.1"
+   start="System_PLL.reset_source"
+   end="fifo_OUCH_ingress.reset_out" />
  <interconnectRequirement for="$system" name="qsys_mm.clockCrossingAdapter" value="HANDSHAKE" />
  <interconnectRequirement for="$system" name="qsys_mm.enableEccProtection" value="FALSE" />
  <interconnectRequirement for="$system" name="qsys_mm.insertDefaultSlave" value="FALSE" />
