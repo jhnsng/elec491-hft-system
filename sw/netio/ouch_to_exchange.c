@@ -10,12 +10,13 @@
 #include <netinet/tcp.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <time.h>
 
 /* ============================================================
  * Configuration
  * ============================================================ */
 
-#define ENABLE_TCP     0   /* <-- toggle this */
+#define ENABLE_TCP     1   /* <-- toggle this */
 
 #define EXCH_IP        "192.168.1.10"
 #define EXCH_PORT      9000
@@ -111,11 +112,21 @@ static int tcp_connect(const char *ip, int port)
 #endif
 
 /* ============================================================
+ * Time helpers
+ * ============================================================ */
+
+static inline uint64_t timespec_to_ns(const struct timespec *ts)
+{
+    return (uint64_t)ts->tv_sec * 1000000000ULL + (uint64_t)ts->tv_nsec;
+}
+
+/* ============================================================
  * Main
  * ============================================================ */
 
 int main(void)
 {
+    struct timespec t_start, t_end;
     volatile uint32_t *lw_base = fifo_map();
     if (!lw_base)
         return 1;
@@ -169,6 +180,10 @@ int main(void)
           //  printf("read fifo empty when blocked=%d\n", READ_FIFO_EMPTY);
             continue;
         }
+
+        //if (msg_len == 0) {
+        //     clock_gettime(CLOCK_MONOTONIC, &t_start);
+        //}
 
         // Pop data first
         uint32_t data = fifo[FIFO_DATA_REG];   // offset 0

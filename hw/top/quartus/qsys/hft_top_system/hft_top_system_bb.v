@@ -86,7 +86,13 @@ module hft_top_system (
 	memory_oct_rzqin,
 	sdram_clk_clk,
 	system_pll_ref_clk_clk,
-	system_pll_ref_reset_reset);	
+	system_pll_ref_reset_reset,
+	fifo_ouch_ingress_out_valid,
+	fifo_ouch_ingress_out_data,
+	fifo_ouch_ingress_out_startofpacket,
+	fifo_ouch_ingress_out_endofpacket,
+	fifo_ouch_ingress_out_empty,
+	fifo_ouch_ingress_out_ready);	
 
 	input		fifo_fpga_to_hps_in_valid;
 	input	[31:0]	fifo_fpga_to_hps_in_data;
@@ -175,4 +181,10 @@ module hft_top_system (
 	output		sdram_clk_clk;
 	input		system_pll_ref_clk_clk;
 	input		system_pll_ref_reset_reset;
+	output		fifo_ouch_ingress_out_valid;
+	output	[31:0]	fifo_ouch_ingress_out_data;
+	output		fifo_ouch_ingress_out_startofpacket;
+	output		fifo_ouch_ingress_out_endofpacket;
+	output	[1:0]	fifo_ouch_ingress_out_empty;
+	input		fifo_ouch_ingress_out_ready;
 endmodule
