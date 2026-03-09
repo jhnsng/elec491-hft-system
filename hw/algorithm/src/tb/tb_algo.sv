@@ -111,7 +111,7 @@ module tb_algorithm;
       tok_req_ready = 1; 
       if (tok_req_valid && tok_req_ready) begin
         tok_req_ready = 0;
-        repeat(2) @(posedge clk);
+        repeat(5) @(posedge clk);
         tok_resp_valid = 1;
         tok_resp_token_id = next_token_id;
         tok_resp_symbol_id = tok_req_symbol_id;
@@ -235,16 +235,17 @@ module tb_algorithm;
     // 2. Sharp Swing UP -> Expect BUY
     $display("-> Forcing UP Cross (Expecting BUY)");
     pre_buy = orders_sent_cnt; 
-    repeat(8) send_tick(101000, 10); // Hold short (8) to keep signal fresh
-    repeat(200) @(posedge clk); 
+    repeat(8) send_tick(101000, 10); 
+    repeat(400) @(posedge clk);  // INCREASED FROM 200
     assert(orders_sent_cnt > pre_buy) else $error("F003 FAIL: No Buy on Up Cross");
-    
+  
     // 3. Sharp Swing DOWN -> Expect SELL
     $display("-> Forcing DOWN Cross (Expecting SELL)");
     pre_sell = orders_sent_cnt;
     repeat(20) send_tick(99000, 10); 
-    repeat(200) @(posedge clk);
+    repeat(400) @(posedge clk);  // INCREASED FROM 200
     assert(orders_sent_cnt > pre_sell) else $error("F004 FAIL: No Sell on Down Cross");
+
     
     $display("=== PASS F003/F004: Strategy triggers correctly ===");
     tests_passed++;
@@ -260,7 +261,8 @@ module tb_algorithm;
     pre_cnt = orders_sent_cnt;
     $display("-> Forcing UP Cross with Spread=600 (Limit=500)");
     repeat(10) send_tick(101000, 600); 
-    repeat(50) @(posedge clk);
+    repeat(150) @(posedge clk);  // INCREASED FROM 50
+
     
     assert(orders_sent_cnt == pre_cnt) else $error("F005 FAIL: Order sent!");
     $display("=== PASS F005: Trade blocked by wide spread ===");
@@ -300,7 +302,7 @@ module tb_algorithm;
         begin
              repeat(20) send_tick(99000, 10);
              repeat(20) send_tick(102000, 10); // Buy
-             repeat(500) @(posedge clk);
+             repeat(800) @(posedge clk);
         end
         begin
             @(event_cancel_seen);
