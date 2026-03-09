@@ -55,18 +55,16 @@ module orderbook_top (
     // Orderbook outputs (150MHz domain)
     logic [31:0] best_bid_price_150;
     logic [31:0] best_bid_qty_150;
-    logic        best_bid_valid_150;
     logic [31:0] best_ask_price_150;
     logic [31:0] best_ask_qty_150;
-    logic        best_ask_valid_150;
+    logic        best_valid_150;
     
     // Orderbook outputs synchronized to 50MHz domain
     logic [31:0] best_bid_price_50;
     logic [31:0] best_bid_qty_50;
-    logic        best_bid_valid_50;
     logic [31:0] best_ask_price_50;
     logic [31:0] best_ask_qty_50;
-    logic        best_ask_valid_50;
+    logic        best_valid_50;
 
     /* ================================
         Test Controller for Manual Input (50MHz domain)
@@ -130,10 +128,9 @@ module orderbook_top (
         .valid_in        (test_valid_150),
         .best_bid_price  (best_bid_price_150),
         .best_bid_qty    (best_bid_qty_150),
-        .best_bid_valid  (best_bid_valid_150),
         .best_ask_price  (best_ask_price_150),
         .best_ask_qty    (best_ask_qty_150),
-        .best_ask_valid  (best_ask_valid_150)
+        .best_valid      (best_valid_150)
     );
     
     /* ================================
@@ -144,7 +141,7 @@ module orderbook_top (
         .src_clk    (pll_clk_150),
         .src_rst_n  (rst_n_sync),
         .src_data   (best_bid_price_150),
-        .src_valid  (best_bid_valid_150),
+        .src_valid  (best_valid_150),
         .dst_clk    (CLOCK_50),
         .dst_rst_n  (rst_n_sync),
         .dst_data   (best_bid_price_50),
@@ -156,19 +153,11 @@ module orderbook_top (
         .src_clk    (pll_clk_150),
         .src_rst_n  (rst_n_sync),
         .src_data   (best_bid_qty_150),
-        .src_valid  (best_bid_valid_150),
+        .src_valid  (best_valid_150),
         .dst_clk    (CLOCK_50),
         .dst_rst_n  (rst_n_sync),
         .dst_data   (best_bid_qty_50),
         .dst_valid  ()
-    );
-    
-    // Synchronize bid valid
-    cdc_sync_bit u_cdc_bid_valid (
-        .src_bit    (best_bid_valid_150),
-        .dst_clk    (CLOCK_50),
-        .dst_rst_n  (rst_n_sync),
-        .dst_bit    (best_bid_valid_50)
     );
     
     // Synchronize ask price
@@ -176,7 +165,7 @@ module orderbook_top (
         .src_clk    (pll_clk_150),
         .src_rst_n  (rst_n_sync),
         .src_data   (best_ask_price_150),
-        .src_valid  (best_ask_valid_150),
+        .src_valid  (best_valid_150),
         .dst_clk    (CLOCK_50),
         .dst_rst_n  (rst_n_sync),
         .dst_data   (best_ask_price_50),
@@ -188,19 +177,19 @@ module orderbook_top (
         .src_clk    (pll_clk_150),
         .src_rst_n  (rst_n_sync),
         .src_data   (best_ask_qty_150),
-        .src_valid  (best_ask_valid_150),
+        .src_valid  (best_valid_150),
         .dst_clk    (CLOCK_50),
         .dst_rst_n  (rst_n_sync),
         .dst_data   (best_ask_qty_50),
         .dst_valid  ()
     );
     
-    // Synchronize ask valid
-    cdc_sync_bit u_cdc_ask_valid (
-        .src_bit    (best_ask_valid_150),
+    // Synchronize combined valid signal
+    cdc_sync_bit u_cdc_valid (
+        .src_bit    (best_valid_150),
         .dst_clk    (CLOCK_50),
         .dst_rst_n  (rst_n_sync),
-        .dst_bit    (best_ask_valid_50)
+        .dst_bit    (best_valid_50)
     );
 
     /* ================================
@@ -215,10 +204,9 @@ module orderbook_top (
         .HEX5            (HEX5),
         .best_bid_price  (best_bid_price_50),
         .best_bid_qty    (best_bid_qty_50),
-        .best_bid_valid  (best_bid_valid_50),
         .best_ask_price  (best_ask_price_50),
         .best_ask_qty    (best_ask_qty_50),
-        .best_ask_valid  (best_ask_valid_50),
+        .best_valid      (best_valid_50),
         .clk             (CLOCK_50),
         .reset_n         (rst_n_sync),
         .sw_price_qty    (SW[0]),  // SW[0]: 0=Price, 1=Quantity

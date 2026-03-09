@@ -24,10 +24,9 @@ module orderbook_tb;
     logic                     valid_in;
     logic [PRICE_WIDTH-1:0]   best_bid_price;
     logic [QTY_WIDTH-1:0]     best_bid_qty;
-    logic                     best_bid_valid;
     logic [PRICE_WIDTH-1:0]   best_ask_price;
     logic [QTY_WIDTH-1:0]     best_ask_qty;
-    logic                     best_ask_valid;
+    logic                     best_valid;
 
     // Test variables
     int test_passed = 0;
@@ -49,10 +48,9 @@ module orderbook_tb;
         .valid_in(valid_in),
         .best_bid_price(best_bid_price),
         .best_bid_qty(best_bid_qty),
-        .best_bid_valid(best_bid_valid),
         .best_ask_price(best_ask_price),
         .best_ask_qty(best_ask_qty),
-        .best_ask_valid(best_ask_valid)
+        .best_valid(best_valid)
     );
 
     // Clock generation
@@ -75,28 +73,27 @@ module orderbook_tb;
         @(posedge clk);
         valid_in <= 1'b0;
         // Wait for full pipeline: RMW (3) + REDUCE_SCAN (256) + REDUCE_TREE (4) = 263 cycles
-        repeat(ORDER_LATENCY + 5) @(posedge clk);
+        repeat(ORDER_LATENCY + 1.5) @(posedge clk);
     endtask
 
     // Task to check best bid
     task check_best_bid(
         input logic [PRICE_WIDTH-1:0] expected_price,
         input logic [QTY_WIDTH-1:0] expected_qty,
-        input logic expected_valid,
         input string test_name
     );
         if (best_bid_price === expected_price && 
             best_bid_qty === expected_qty && 
-            best_bid_valid === expected_valid) begin
+            best_valid === 1'b1) begin
             $display("PASS: %s - Best Bid: Price=%0d, Qty=%0d, Valid=%0b", 
-                     test_name, best_bid_price, best_bid_qty, best_bid_valid);
+                     test_name, best_bid_price, best_bid_qty, best_valid);
             test_passed++;
         end else begin
-            $display("FAIL: %s", test_name);
-            $display("  Expected: Price=%0d, Qty=%0d, Valid=%0b", 
-                     expected_price, expected_qty, expected_valid);
+            $display("[%0t] FAIL: %s", $time, test_name);
+            $display("  Expected: Price=%0d, Qty=%0d, Valid=1", 
+                     expected_price, expected_qty);
             $display("  Got:      Price=%0d, Qty=%0d, Valid=%0b", 
-                     best_bid_price, best_bid_qty, best_bid_valid);
+                     best_bid_price, best_bid_qty, best_valid);
             test_failed++;
         end
     endtask
@@ -105,21 +102,20 @@ module orderbook_tb;
     task check_best_ask(
         input logic [PRICE_WIDTH-1:0] expected_price,
         input logic [QTY_WIDTH-1:0] expected_qty,
-        input logic expected_valid,
         input string test_name
     );
         if (best_ask_price === expected_price && 
             best_ask_qty === expected_qty && 
-            best_ask_valid === expected_valid) begin
+            best_valid === 1'b1) begin
             $display("PASS: %s - Best Ask: Price=%0d, Qty=%0d, Valid=%0b", 
-                     test_name, best_ask_price, best_ask_qty, best_ask_valid);
+                     test_name, best_ask_price, best_ask_qty, best_valid);
             test_passed++;
         end else begin
-            $display("FAIL: %s", test_name);
-            $display("  Expected: Price=%0d, Qty=%0d, Valid=%0b", 
-                     expected_price, expected_qty, expected_valid);
+            $display("[%0t] FAIL: %s", $time, test_name);
+            $display("  Expected: Price=%0d, Qty=%0d, Valid=1", 
+                     expected_price, expected_qty);
             $display("  Got:      Price=%0d, Qty=%0d, Valid=%0b", 
-                     best_ask_price, best_ask_qty, best_ask_valid);
+                     best_ask_price, best_ask_qty, best_valid);
             test_failed++;
         end
     endtask
@@ -144,50 +140,50 @@ module orderbook_tb;
         
         $display("\n--- Test 1: Add single bid at start of Block 0 ---");
         add_order(SIDE_BID, 27963, 100); // Block 0, addr 0
-        check_best_bid(27963, 100, 1'b1, "Single bid at block 0 start");
+        check_best_bid(27963, 100, "Single bid at block 0 start");
         
         $display("\n--- Test 2: Add higher bid in middle of Block 0 ---");
         add_order(SIDE_BID, 28090, 150); // Block 0, addr 127 (middle)
-        check_best_bid(28090, 150, 1'b1, "Higher bid in middle of block 0");
+        check_best_bid(28090, 150, "Higher bid in middle of block 0");
         
         $display("\n--- Test 3: Add bid at end of Block 0 ---");
         add_order(SIDE_BID, 28218, 200); // Block 0, addr 255 (end)
-        check_best_bid(28218, 200, 1'b1, "Bid at end of block 0 is highest");
+        check_best_bid(28218, 200, "Bid at end of block 0 is highest");
         
         $display("\n--- Test 4: Add bid in middle of Block 2 ---");
         add_order(SIDE_BID, 28603, 75); // Block 2, addr 640 (128 into block 2)
-        check_best_bid(28603, 75, 1'b1, "Bid in block 2 is highest");
+        check_best_bid(28603, 75, "Bid in block 2 is highest");
         
         $display("\n--- Test 5: Add ask at start of Block 1 ---");
         add_order(SIDE_ASK, 28219, 100); // Block 1, addr 256
-        check_best_ask(28219, 100, 1'b1, "Single ask at block 1 start");
+        check_best_ask(28219, 100, "Single ask at block 1 start");
         
         $display("\n--- Test 6: Add lower ask near start of Block 0 ---");
         add_order(SIDE_ASK, 27975, 125); // Block 0, addr 12
-        check_best_ask(27975, 125, 1'b1, "Lower ask near start of block 0");
+        check_best_ask(27975, 125, "Lower ask near start of block 0");
         
         $display("\n--- Test 7: Add another ask in Block 0 (not best) ---");
         add_order(SIDE_ASK, 28050, 175); // Block 0, addr 87
-        check_best_ask(27975, 125, 1'b1, "Best ask unchanged");
+        check_best_ask(27975, 125, "Best ask unchanged");
         
         $display("\n--- Test 8: Update existing bid quantity ---");
         add_order(SIDE_BID, 28218, 50); // Add to existing at Block 0, addr 255
-        check_best_bid(28603, 75, 1'b1, "Best bid unchanged after qty update");
+        check_best_bid(28603, 75, "Best bid unchanged after qty update");
         
         $display("\n--- Test 9: Remove best bid in Block 2 ---");
         add_order(SIDE_BID, 28603, -75); // Remove Block 2, addr 640
-        check_best_bid(28218, 250, 1'b1, "Best bid now at end of block 0");
+        check_best_bid(28218, 250, "Best bid now at end of block 0");
         
         $display("\n--- Test 10: Test across multiple blocks with varied addresses ---");
         add_order(SIDE_BID, 28550, 50);  // Block 2, addr 587
         add_order(SIDE_BID, 28800, 60);  // Block 3, addr 837
         add_order(SIDE_BID, 29100, 70);  // Block 4, addr 1137
-        check_best_bid(29100, 70, 1'b1, "Highest bid in block 4");
+        check_best_bid(29100, 70, "Highest bid in block 4");
         
         $display("\n--- Test 11: Add asks at various positions ---");
         add_order(SIDE_ASK, 28350, 40);  // Block 1, addr 387
         add_order(SIDE_ASK, 28700, 45);  // Block 2, addr 737
-        check_best_ask(27975, 125, 1'b1, "Best ask still in block 0");
+        check_best_ask(27975, 125, "Best ask still in block 0");
         
         $display("\n--- Test 12: Test spread ---");
         $display("Current spread: %0d (Bid: %0d, Ask: %0d)", 
@@ -196,20 +192,20 @@ module orderbook_tb;
         $display("\n--- Test 13: Test high addresses in Block 15 ---");
         add_order(SIDE_BID, 31900, 100); // Block 15, addr 3937
         add_order(SIDE_BID, 32000, 150); // Block 15, addr 4037 (high end)
-        check_best_bid(32000, 150, 1'b1, "Highest bid near end of address space");
+        check_best_bid(32000, 150, "Highest bid near end of address space");
         
         $display("\n--- Test 14: Add ask at very low address ---");
         add_order(SIDE_ASK, 27964, 80); // Block 0, addr 1
-        check_best_ask(27964, 80, 1'b1, "Lowest ask at start of range");
+        check_best_ask(27964, 80, "Lowest ask at start of range");
         
         $display("\n--- Test 15: Remove best bid and check fallback ---");
         add_order(SIDE_BID, 32000, -150); // Remove highest
-        check_best_bid(31900, 100, 1'b1, "Best bid falls back to previous");
+        check_best_bid(31900, 100, "Best bid falls back to previous");
         
         $display("\n--- Test 16: Test boundary between blocks ---");
         add_order(SIDE_BID, 28217, 90); // Block 0, addr 254 (near end)
         add_order(SIDE_BID, 28220, 95); // Block 1, addr 257 (just into block 1)
-        check_best_bid(31900, 100, 1'b1, "Best bid still in block 15");
+        check_best_bid(31900, 100, "Best bid still in block 15");
         
         // Summary
         $display("\n=== Test Summary ===");

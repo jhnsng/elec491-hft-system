@@ -23,10 +23,9 @@ module tb_orderbook_rmw;
     logic                     valid_in;
     logic [PRICE_WIDTH-1:0]   best_bid_price;
     logic [QTY_WIDTH-1:0]     best_bid_qty;
-    logic                     best_bid_valid;
     logic [PRICE_WIDTH-1:0]   best_ask_price;
     logic [QTY_WIDTH-1:0]     best_ask_qty;
-    logic                     best_ask_valid;
+    logic                     best_valid;
     
     // Testbench variables
     int test_count = 0;
@@ -49,10 +48,9 @@ module tb_orderbook_rmw;
         .valid_in(valid_in),
         .best_bid_price(best_bid_price),
         .best_bid_qty(best_bid_qty),
-        .best_bid_valid(best_bid_valid),
         .best_ask_price(best_ask_price),
         .best_ask_qty(best_ask_qty),
-        .best_ask_valid(best_ask_valid)
+        .best_valid(best_valid)
     );
     
     // Clock generation
