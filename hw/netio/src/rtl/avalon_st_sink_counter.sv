@@ -114,11 +114,11 @@ logic [15:0] eop_seen_count /* synthesis noprune */;
         end else if (valid && endofpacket) begin
             //curr_seq <= data[15:8]; // only read sequence on EOP
 
-            if (seq_valid && data[15:8] != last_seq + 1) begin
+            if (seq_valid && {data[7:0], data[15:8]} != last_seq + 1) begin
                 seq_error_count <= seq_error_count + 1;
             end
 
-            last_seq  <= data[15:8];
+            last_seq  <= {data[7:0], data[15:8]};
             seq_valid <= 1'b1;
         end
     end
