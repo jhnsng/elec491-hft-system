@@ -21,6 +21,7 @@ module algo_top (
     .clk(link.clk),
     .rst_n(link.rst_n),
     .snap_en(snap_fire),
+    .sig_ready(sig_ready),
 
     .bb_p(link.l1.bb_p),
     .bb_q(link.l1.bb_q),
