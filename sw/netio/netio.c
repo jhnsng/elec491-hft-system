@@ -13,32 +13,13 @@
 #include <time.h>
 
 /* ============================================================
- * FIFO debug / verification
- * ============================================================ */
-
-/*
- * When enabled:
- *   - injects a monotonically increasing sequence number
- *     into the upper bits of the 64-bit upd
- *   - used ONLY for FIFO integrity testing
- *
- * Disable once FIFO correctness is proven.
- */
-#define FIFO_DEBUG_ENABLE  1
-
-#if FIFO_DEBUG_ENABLE
-#define FIFO_DEBUG_SEQ_BITS 16
-#define FIFO_DEBUG_SEQ_SHIFT (64 - FIFO_DEBUG_SEQ_BITS)
-#endif
-
-
-/* ============================================================
  * Configuration
  * ============================================================ */
 #define LISTEN_PORT     12345
-#define MAX_UDP_SIZE    512
-#define WARMUP_PACKETS  200
+#define MAX_UDP_SIZE    2048
+#define WARMUP_PACKETS  0
 #define AVG_INTERVAL    50
+#define ITCH_PKT_HEADER 20
 
 /* ============================================================
  * ITCH validation table
@@ -70,88 +51,24 @@ static int get_itch_msg_length(uint8_t type)
 
 #define LW_BRIDGE_BASE   0xFF200000
 #define LW_BRIDGE_SPAN   0x1000
-// FIFO Data is at offset 0x00 relative to LW_BRIDGE_BASE
-// FIFO CSR is at offset 0x20 relative to LW_BRIDGE_BASE
 #define FIFO_DATA_OFFSET 0x00
 #define FIFO_CSR_OFFSET  0x20
 
-// FIFO status registers
-// base address is current fifo fill-level
-// base+1 address is status: 
-// --bit0 signals "full"
-// --bit1 signals "empty"
 #define WRITE_FIFO_FILL_LEVEL (*FIFO_write_status_ptr)
-#define WRITE_FIFO_FULL		  ((*(FIFO_write_status_ptr+1))& 1 ) 
-#define WRITE_FIFO_EMPTY	  ((*(FIFO_write_status_ptr+1))& 2 ) 
+#define WRITE_FIFO_FULL       ((*(FIFO_write_status_ptr+1))& 1 ) 
+#define WRITE_FIFO_EMPTY      ((*(FIFO_write_status_ptr+1))& 2 ) 
 
-// HPS_to_FPGA FIFO status address = 0
 volatile unsigned int * FIFO_write_status_ptr = NULL ;
 
 #define FIFO_DATA_REG   0
 #define FIFO_META_REG   1
-
 #define META_SOP        (1 << 0)
 #define META_EOP        (1 << 1)
-
-/* ============================================================
- * Debug FIFO wrapper
- * ============================================================ */
-
-/* #if FIFO_DEBUG_ENABLE
-static uint16_t fifo_dbg_seq = 0;
-#endif
-
-static inline void fifo_write_debug_update64(volatile uint32_t *fifo,
-                                             uint64_t upd)
-{
-#if FIFO_DEBUG_ENABLE
-    uint64_t dbg_upd = upd;
-
-    // Inject sequence into upper bits 
-    dbg_upd &= ~(((uint64_t)((1ULL << FIFO_DEBUG_SEQ_BITS) - 1))
-                 << FIFO_DEBUG_SEQ_SHIFT);
-
-    dbg_upd |= ((uint64_t)fifo_dbg_seq << FIFO_DEBUG_SEQ_SHIFT);
-    fifo_dbg_seq++;
-    
-    fifo_write_update64(fifo, dbg_upd);
-#else
-    fifo_write_update64(fifo, upd);
-#endif
-} */
-
-#if FIFO_DEBUG_ENABLE
-static uint16_t fifo_dbg_seq = 0;
-#endif
-
-static void fifo_write_update64(volatile uint32_t *fifo, uint64_t update);
-
-
-static inline void fifo_write_debug_update64(volatile uint32_t *fifo,
-                                             uint64_t upd)
-{
-#if FIFO_DEBUG_ENABLE
-    /* ZERO everything */
-    uint64_t dbg_upd = 0;
-
-    /* Inject sequence into upper bits */
-    dbg_upd |= ((uint64_t)fifo_dbg_seq << FIFO_DEBUG_SEQ_SHIFT);
-    fifo_dbg_seq++;
-
-    fifo_write_update64(fifo, dbg_upd);
-    //usleep(10);
-#else
-    fifo_write_update64(fifo, upd);
-#endif
-}
-
-
 
 static void fifo_write_update64(volatile uint32_t *fifo, uint64_t update)
 {
     fifo[FIFO_META_REG] = META_SOP;
     fifo[FIFO_DATA_REG] = (uint32_t)(update & 0xFFFFFFFF);
-
     fifo[FIFO_META_REG] = META_EOP;
     fifo[FIFO_DATA_REG] = (uint32_t)(update >> 32);
 }
@@ -182,12 +99,8 @@ static int udp_open_and_bind(int port)
         return -1;
     }
 
-    /* ------------------------------
-     * Increase UDP receive buffer
-     * ------------------------------ */
-    int rcvbuf = 4 * 1024 * 1024;   // NEW
-    setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
-               &rcvbuf, sizeof(rcvbuf));   // NEW
+    int rcvbuf = 4 * 1024 * 1024;
+    setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
 
     struct sockaddr_in addr = {0};
     addr.sin_family      = AF_INET;
@@ -200,6 +113,7 @@ static int udp_open_and_bind(int port)
         return -1;
     }
 
+    printf("UDP socket bound to port %d\n", port);
     return sock;
 }
 
@@ -225,6 +139,7 @@ static volatile uint32_t *fifo_map(void)
         return NULL;
     }
 
+    //printf("FIFO mapped at %p\n", base);
     return (volatile uint32_t *)base;
 }
 
@@ -256,7 +171,6 @@ int main(void)
     struct timeval tv;
     tv.tv_sec  = 1;
     tv.tv_usec = 0;
-
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     volatile uint32_t *fifo = fifo_map();
@@ -265,12 +179,9 @@ int main(void)
         return 1;
     }
 
-    printf("NetIO: listening for ITCH UDP on port %d\n", LISTEN_PORT);
-
     FIFO_write_status_ptr = (unsigned int *)((char*)fifo + 0x20);
 
-    //volatile uint32_t *fifo_data = (volatile uint32_t *)((char *)fifo + FIFO_DATA_OFFSET);
-    //volatile uint32_t *fifo_csr  = (volatile uint32_t *)((char *)fifo + FIFO_CSR_OFFSET);
+    printf("NetIO: listening for ITCH UDP on port %d\n", LISTEN_PORT);
 
     int warmup = 0;
 
@@ -282,18 +193,6 @@ int main(void)
     uint64_t total_received = 0;
     uint64_t total_measured = 0;
 
-    /*
-    printf("Bridge base: %p\n", (void*)LW_BRIDGE_BASE);
-    printf("CSR pointer: %p\n", (void*)FIFO_write_status_ptr);
-    printf("Expected CSR address: 0x%lx\n", (unsigned long)((char*)LW_BRIDGE_BASE + 0x20));
-
-    // Sanity test: Write 1 packet, check if fill_level increments
-    printf("Fill level before write: %u\n", WRITE_FIFO_FILL_LEVEL);
-
-    fifo_write_debug_update64(fifo, 0xDEADBEEF);
-
-    printf("Fill level after 1 write: %u\n", WRITE_FIFO_FILL_LEVEL);
-    */
     while (1) {
         struct timespec t_rx_start, t_rx_end;
         struct timespec t_after_parse, t_after_ordermap, t_after_fifo;
@@ -301,137 +200,182 @@ int main(void)
         clock_gettime(CLOCK_MONOTONIC_RAW, &t_rx_start);
 
         ssize_t n = recvfrom(sock, buf, sizeof(buf), 0, NULL, NULL);
+        //printf("recvfrom returned %zd bytes\n", n);
 
-        if (n < 0 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
-            if (total_received > 0) {
-                printf("[STALL] recv timeout\n");
-                printf("Final counts: received=%" PRIu64
-                       " measured=%" PRIu64
-                       " dropped=%" PRIu64 "\n",
-                       total_received, total_measured, dropped_pkts);
+        if (n < 0) {
+            if (errno == EWOULDBLOCK || errno == EAGAIN) {
+               // printf("[STALL] recv timeout\n");
+            } else {
+               // perror("recvfrom");
             }
             continue;
         }
 
         clock_gettime(CLOCK_MONOTONIC_RAW, &t_rx_end);
         total_received++;
+        //printf("Packet %llu received, size=%zd\n", total_received, n);
 
-        if (n <= 0)
-            continue;
-
-        uint8_t type = buf[0];
-        int expected_len = get_itch_msg_length(type);
-        if (expected_len < 0 || n != expected_len)
-            continue;
-
-        if (warmup < WARMUP_PACKETS) {
-            warmup++;
+        if (n <= ITCH_PKT_HEADER) {
+            printf("Packet too small, ignoring\n");
             continue;
         }
 
-        /* ------------------------------
-         * Sequence check (A1)
-         * ------------------------------ */
-        uint32_t seq;
-        memcpy(&seq, &buf[1], 4);
-        seq = ntohl(seq);
+        char session[11];
+        memcpy(session, buf, 10);
+        session[10] = 0;
 
-        if (!seq_initialized) {
-            expected_seq = seq + 1;
-            seq_initialized = true;
-        } else if (seq != expected_seq) {
-            if (seq > expected_seq) {
-                dropped_pkts += (seq - expected_seq);
-                printf("[DROP] expected=%u got=%u (lost %u)\n",
-                       expected_seq, seq, seq - expected_seq);
-            } else {
-                printf("[REORDER] expected=%u got=%u\n",
-                       expected_seq, seq);
+        uint64_t pkt_seq;
+        memcpy(&pkt_seq, buf + 10, 8);
+        pkt_seq = be64toh(pkt_seq);
+
+        uint16_t msg_count;
+        memcpy(&msg_count, buf + 18, 2);
+        msg_count = ntohs(msg_count);
+
+        //printf("Session='%s', pkt_seq=%" PRIu64 ", msg_count=%u\n",
+        //       session, pkt_seq, msg_count);
+
+        uint8_t *cursor = buf + ITCH_PKT_HEADER;
+        int remaining = n - ITCH_PKT_HEADER;
+
+        for (int m = 0; m < msg_count && remaining > 0; m++) {
+            if (remaining < 3) {
+                printf("Remaining <3 bytes, breaking\n");
+                break;
             }
-            expected_seq = seq + 1;
-        } else {
-            expected_seq++;
-        }
 
-        uint64_t order_id;
-        uint32_t price;
-        uint32_t quantity;
-        uint8_t side;
-        ob_update upd;
+            uint16_t msg_len;
+            memcpy(&msg_len, cursor, 2);
+            msg_len = ntohs(msg_len);
 
-        switch (type) {
+            int total_len = msg_len + 2;
 
-        case 'A':
-            memcpy(&order_id, &buf[11], 8);
-            memcpy(&quantity, &buf[20], 4);
-            memcpy(&price, &buf[32], 4);
-            side = buf[19];
+            if (remaining < total_len) {
+                printf("Incomplete message: remaining=%d, total_len=%d\n", remaining, total_len);
+                break;
+            }
 
-            clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
-            upd = order_add(order_id, price, quantity, side);
-            break;
+            uint8_t type = cursor[2];
+            //printf("Message %d: type='%c', msg_len=%u\n", m, type, msg_len);
 
-        case 'E':
-        case 'X':
-            memcpy(&order_id, &buf[11], 8);
-            memcpy(&quantity, &buf[19], 4);
+            int expected_len = get_itch_msg_length(type);
+            if (expected_len < 0 || msg_len != expected_len) {
+                printf("Skipping unknown or mismatched message type\n");
+                cursor += total_len;
+                remaining -= total_len;
+                continue;
+            }
 
-            clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
-            upd = order_cancel_execute(order_id, quantity);
-            break;
+            uint8_t *msg = cursor + 2;
 
-        default:
-            continue;
-        }
+            if (warmup < WARMUP_PACKETS) {
+                warmup++;
+                cursor += total_len;
+                remaining -= total_len;
+                continue;
+            }
 
-        clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_ordermap);
-        //fifo_write_update64(fifo, upd);
+            uint64_t order_id;
+            uint32_t price;
+            uint32_t quantity;
+            uint8_t side;
+            ob_update upd;
 
+            switch (type) {
+                case 'A':
+                case 'F': {
+                    memcpy(&order_id, &msg[11], 8);
+                    memcpy(&quantity, &msg[20], 4);
+                    memcpy(&price, &msg[32], 4);
+                    side = msg[19];
 
+                    clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
 
-        // Register Map for "in_csr":
-        // Offset 0: fill_level (How many words are currently in the FIFO)
-        // Offset 1: status (Bit 0 = Full, Bit 1 = Empty, etc.)
-        //uint32_t fill_level = fifo_csr[0]; 
+                    //printf("order_add: id=0x%016" PRIx64 ", price=0x%" PRIx32
+                   //        ", qty=0x%" PRIx32 ", side=%c\n",
+                    //       order_id, price, quantity, side);
 
-        // If FIFO is nearly full (e.g., depth 8192), wait.
-        // We leave a safety margin (e.g., 50 words) to account for skid.
-        while (WRITE_FIFO_FILL_LEVEL >= (8192 - 64)) {
-            //printf("fill level=%d\n", WRITE_FIFO_FILL_LEVEL);
-        }
-        //printf("fill level=%d\n", WRITE_FIFO_FILL_LEVEL);
+                    upd = order_add(order_id, price, quantity, side);
+                    break;
+                    }
+                case 'E': // TODO: comment out endianness conversions (may need to add them back during integration)
+                    memcpy(&order_id, &msg[11], 8);
+                    memcpy(&quantity, &msg[19], 4);
 
-        fifo_write_debug_update64(fifo, upd);
+                    clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
 
-        // 2. READ BARRIER (Crucial Step)
-        // Force the bridge to flush writes by reading the Status Register.
-        // We don't even need to check the value, just the ACT of reading acts as a fence.
-        volatile uint32_t dummy = FIFO_write_status_ptr[0];
-        (void)dummy; // Prevent unused variable warning
-        clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_fifo);
+                    upd = order_cancel_execute(order_id, quantity);
+                    //printf("order_execute: id=0x%016" PRIx64 ", qty=0x%" PRIx32 "\n",
+                    //       order_id, quantity);
+                    break;
 
-        total_measured++;
+                case 'X':
+                    memcpy(&order_id, &msg[11], 8);
+                    memcpy(&quantity, &msg[19], 4);
+                    
+                    clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
 
-        tot_latency_rx       += timespec_to_ns(&t_rx_end) - timespec_to_ns(&t_rx_start);
-        tot_latency_parse    += timespec_to_ns(&t_after_parse) - timespec_to_ns(&t_rx_end);
-        tot_latency_ordermap += timespec_to_ns(&t_after_ordermap) - timespec_to_ns(&t_after_parse);
-        tot_latency_fifo     += timespec_to_ns(&t_after_fifo) - timespec_to_ns(&t_after_ordermap);
+                    upd = order_cancel_execute(order_id, quantity);
+                    //printf("order_cancel: id=0x%016" PRIx64 ", qty=0x%" PRIx32 "\n",
+                    //       order_id, quantity);
+                    break;
 
-        if (total_measured % AVG_INTERVAL == 0) {
-            printf("Latency avg over %d pkts: rx=%" PRIu64
-                   " ns, parse=%" PRIu64
-                   " ns, ordermap=%" PRIu64
-                   " ns, fifo=%" PRIu64 " ns\n",
-                   AVG_INTERVAL,
-                   tot_latency_rx / AVG_INTERVAL,
-                   tot_latency_parse / AVG_INTERVAL,
-                   tot_latency_ordermap / AVG_INTERVAL,
-                   tot_latency_fifo / AVG_INTERVAL);
+                case 'D': // TODO: change to new ordermap logic
+                    memcpy(&order_id, &msg[9], 8);
 
-            tot_latency_rx = 0;
-            tot_latency_parse = 0;
-            tot_latency_ordermap = 0;
-            tot_latency_fifo = 0;
+                    clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
+
+                    upd = order_cancel_execute(order_id, 0);
+                    break;
+
+                default:
+                    printf("Unknown message type '%c'\n", type);
+                    cursor += total_len;
+                    remaining -= total_len;
+                    continue;
+            }
+
+            clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_ordermap);
+
+            //printf("ordermap output=0x%016" PRIx64 "\n", upd);
+
+            while (WRITE_FIFO_FILL_LEVEL >= (8192 - 64)) {
+                printf("FIFO full, waiting...\n");
+            }
+
+            fifo_write_update64(fifo, upd);
+
+            volatile uint32_t dummy = FIFO_write_status_ptr[0];
+            (void)dummy;
+
+            clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_fifo);
+
+            total_measured++;
+
+            tot_latency_rx       += timespec_to_ns(&t_rx_end) - timespec_to_ns(&t_rx_start);
+            tot_latency_parse    += timespec_to_ns(&t_after_parse) - timespec_to_ns(&t_rx_end);
+            tot_latency_ordermap += timespec_to_ns(&t_after_ordermap) - timespec_to_ns(&t_after_parse);
+            tot_latency_fifo     += timespec_to_ns(&t_after_fifo) - timespec_to_ns(&t_after_ordermap);
+
+            if (total_measured % AVG_INTERVAL == 0) {
+                printf("Latency avg over %d pkts: rx=%" PRIu64
+                       " ns, parse=%" PRIu64
+                       " ns, ordermap=%" PRIu64
+                       " ns, fifo=%" PRIu64 " ns\n",
+                       AVG_INTERVAL,
+                       tot_latency_rx / AVG_INTERVAL,
+                       tot_latency_parse / AVG_INTERVAL,
+                       tot_latency_ordermap / AVG_INTERVAL,
+                       tot_latency_fifo / AVG_INTERVAL);
+
+                tot_latency_rx = 0;
+                tot_latency_parse = 0;
+                tot_latency_ordermap = 0;
+                tot_latency_fifo = 0;
+            }
+
+            cursor += total_len;
+            remaining -= total_len;
         }
     }
 
