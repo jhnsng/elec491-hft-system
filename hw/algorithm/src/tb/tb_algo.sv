@@ -54,8 +54,14 @@ module tb_algorithm;
   logic [31:0] rpt_filled_total;
 
   // ----------------------------------------------------------------
-  // Verification State
+  // Verification State & Global Limits
   // ----------------------------------------------------------------
+  // Real world prices from prompt requirements mapped to Q16 integer format (price * 10000)
+  // Assuming the Q format uses a multiplier of 10000 based on the $itor() formatting in previous tests.
+  localparam int OPENING_PRICE = 2999100; // $299.91
+  localparam int UPPER_LIMIT   = 3203900; // $320.39
+  localparam int LOWER_LIMIT   = 2796300; // $279.63
+
   typedef struct {
     side_e       side;
     logic [31:0] price;
@@ -145,6 +151,12 @@ module tb_algorithm;
            orders_sent_cnt++;
            assert(ord_symbol_id == l1_symbol_id) else $error("F008: Wrong Symbol ID");
 
+           // Verify Order falls within required limits
+           if (ord_price_int < LOWER_LIMIT) 
+               $error("LIMIT BREACH: Order sent below Lower Limit ($279.63). Price=$%0.4f", $itor(ord_price_int)/10000.0);
+           if (ord_price_int > UPPER_LIMIT) 
+               $error("LIMIT BREACH: Order sent above Upper Limit ($320.39). Price=$%0.4f", $itor(ord_price_int)/10000.0);
+
            pending_orders[ord_token_id] = '{side: side_e'(ord_side), price: ord_price_int, qty: ord_qty};
            $display("[DUT] ENTER Order: Token=%0d Price=$%0.4f Side=%0s", 
                     ord_token_id, $itor(ord_price_int)/10000.0, ord_side ? "SELL" : "BUY");
@@ -209,17 +221,13 @@ module tb_algorithm;
     repeat(gap) @(posedge clk);
   endtask
 
-  // BASE PRICE = $299.91 (2999100 in implied 4-decimal integer format)
-  localparam int BASE_PRICE  = 2999100;
-  localparam int LOWER_LIMIT = 2796300; // $279.63
-  localparam int UPPER_LIMIT = 3203900; // $320.39
-
   task automatic test_f001_warmup();
     int initial_ords;
     $display("\n=== START F001: Warmup Test ===");
     initial_ords = orders_sent_cnt;
     for(int i=0; i<60; i++) begin
-       int p = (i%2==0) ? BASE_PRICE : BASE_PRICE + 500; 
+       // Fluctuate around OPENING_PRICE ($299.91)
+       int p = (i%2==0) ? OPENING_PRICE : OPENING_PRICE + 500; 
        send_tick(p, 10);
     end
     assert(orders_sent_cnt == initial_ords) else $error("F001 FAIL");
@@ -233,22 +241,22 @@ module tb_algorithm;
     auto_fill_enable = 1;
     partial_fill_test = 0;
 
-    // 1. Settling (Ensure Negative MACD)
-    repeat(30) send_tick(LOWER_LIMIT, 10); // Settle down to lower limit
+    // 1. Settling below opening
+    repeat(30) send_tick(OPENING_PRICE - 10000, 10); 
     repeat(100) @(posedge clk);
 
     // 2. Sharp Swing UP -> Expect BUY
     $display("-> Forcing UP Cross (Expecting BUY)");
     pre_buy = orders_sent_cnt; 
-    repeat(8) send_tick(UPPER_LIMIT, 10); // Swing all the way to upper limit
-    repeat(400) @(posedge clk);  // INCREASED FROM 200
+    repeat(8) send_tick(OPENING_PRICE + 10000, 10); 
+    repeat(400) @(posedge clk);
     assert(orders_sent_cnt > pre_buy) else $error("F003 FAIL: No Buy on Up Cross");
 
     // 3. Sharp Swing DOWN -> Expect SELL
     $display("-> Forcing DOWN Cross (Expecting SELL)");
     pre_sell = orders_sent_cnt;
-    repeat(20) send_tick(LOWER_LIMIT, 10); // Swing back down to lower limit
-    repeat(400) @(posedge clk);  // INCREASED FROM 200
+    repeat(20) send_tick(OPENING_PRICE - 10000, 10); 
+    repeat(400) @(posedge clk);
     assert(orders_sent_cnt > pre_sell) else $error("F004 FAIL: No Sell on Down Cross");
 
     $display("=== PASS F003/F004: Strategy triggers correctly ===");
@@ -260,12 +268,12 @@ module tb_algorithm;
     $display("\n=== START F005: Wide Spread Protection Test ===");
     auto_fill_enable = 0;
 
-    repeat(20) send_tick(LOWER_LIMIT, 10); // Reset to lower limit
+    repeat(20) send_tick(OPENING_PRICE, 10); // Reset
 
     pre_cnt = orders_sent_cnt;
     $display("-> Forcing UP Cross with Spread=600 (Limit=500)");
-    repeat(10) send_tick(UPPER_LIMIT, 600); 
-    repeat(150) @(posedge clk);  // INCREASED FROM 50
+    repeat(10) send_tick(OPENING_PRICE + 10000, 600); 
+    repeat(150) @(posedge clk);
 
     assert(orders_sent_cnt == pre_cnt) else $error("F005 FAIL: Order sent!");
     $display("=== PASS F005: Trade blocked by wide spread ===");
@@ -275,7 +283,7 @@ module tb_algorithm;
   task automatic test_f006_crossed_market();
     int pre_cnt;
     $display("\n=== START F006: Crossed Market Protection Test ===");
-    repeat(20) send_tick(LOWER_LIMIT, 10); // Reset to lower limit
+    repeat(20) send_tick(OPENING_PRICE, 10); // Reset
 
     pre_cnt = orders_sent_cnt;
     $display("-> Forcing UP Cross with Crossed Quotes (Bid > Ask)");
@@ -283,8 +291,8 @@ module tb_algorithm;
     repeat(10) begin
       l1_valid = 1;
       l1_ts_ns += 1000;
-      bb_p = UPPER_LIMIT + 1000; 
-      ba_p = UPPER_LIMIT - 1000; // Crossed
+      bb_p = OPENING_PRICE + 10000; 
+      ba_p = OPENING_PRICE - 10000; // Crossed
       bb_q = 100; ba_q = 100;
       do @(posedge clk); while (!l1_ready);
       l1_valid = 0;
@@ -301,21 +309,24 @@ module tb_algorithm;
     auto_fill_enable = 1;
     partial_fill_test = 1; 
 
-    fork
-        begin
-             repeat(20) send_tick(LOWER_LIMIT, 10);
-             repeat(20) send_tick(UPPER_LIMIT, 10); // Buy
-             repeat(800) @(posedge clk);
-        end
-        begin
-            @(event_cancel_seen);
-            $display("-> Successfully detected Cancel Order event!");
-        end
-        begin
-            repeat(10000) @(posedge clk);
-            $error("F009 FAIL: Timeout waiting for cancel");
-        end
-    join_any
+    fork begin
+      fork
+          begin
+               repeat(20) send_tick(OPENING_PRICE, 10);
+               repeat(20) send_tick(OPENING_PRICE + 20000, 10); // Buy
+               repeat(800) @(posedge clk);
+          end
+          begin
+              @(event_cancel_seen);
+              $display("-> Successfully detected Cancel Order event!");
+          end
+          begin
+              repeat(10000) @(posedge clk);
+              $error("F009 FAIL: Timeout waiting for cancel");
+          end
+      join_any
+      disable fork;
+    end join
 
     $display("=== PASS F009: Partial fill correctly triggered cancel ===");
     partial_fill_test = 0; 
@@ -334,7 +345,7 @@ module tb_algorithm;
     test_f001_warmup();
 
     // Stabilize EMAs before next test
-    repeat(100) send_tick(BASE_PRICE, 10); 
+    repeat(100) send_tick(OPENING_PRICE, 10); 
 
     test_f003_f004_crossing();
     test_f005_wide_spread();
