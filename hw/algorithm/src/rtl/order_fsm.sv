@@ -99,32 +99,48 @@ module order_fsm (
   out_ent_t out_tab [MAX_OUT];
 
   // ----------------------------
-  // Free Slot Finder (Parallel)
+  // Free Slot Finder (Pipelined)
   // ----------------------------
-  logic [1:0] free_i;
-  logic       has_free;
-  
+  logic [1:0] free_i, free_i_next;
+  logic       has_free, has_free_next;
+
   always_comb begin
-    free_i = 2'd0;
-    has_free = 1'b0;
-    if      (!out_tab[0].valid) begin free_i = 2'd0; has_free = 1'b1; end
-    else if (!out_tab[1].valid) begin free_i = 2'd1; has_free = 1'b1; end
-    else if (!out_tab[2].valid) begin free_i = 2'd2; has_free = 1'b1; end
-    else if (!out_tab[3].valid) begin free_i = 2'd3; has_free = 1'b1; end
+    free_i_next = 2'd0;
+    has_free_next = 1'b0;
+    if      (!out_tab[0].valid) begin free_i_next = 2'd0; has_free_next = 1'b1; end
+    else if (!out_tab[1].valid) begin free_i_next = 2'd1; has_free_next = 1'b1; end
+    else if (!out_tab[2].valid) begin free_i_next = 2'd2; has_free_next = 1'b1; end
+    else if (!out_tab[3].valid) begin free_i_next = 2'd3; has_free_next = 1'b1; end
+  end
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      free_i <= 2'd0;
+      has_free <= 1'b0;
+    end else begin
+      free_i <= free_i_next;
+      has_free <= has_free_next;
+    end
   end
 
   logic out_full;
   assign out_full = !has_free;
-  assign sig_ready = !fifo_full && !out_full;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      sig_ready <= 1'b0;
+    end else begin
+      sig_ready <= !fifo_full && !out_full;
+    end
+  end
 
    // ----------------------------
   // Token Matcher & Pipelining
   // ----------------------------
 
   // --- STAGE 0: Incoming Report Buffer ---
-  // Buffer the incoming report so it doesn't fan out directly from I/O pins
-  logic                      rpt_valid_s0;
-  hft_types_pkg::order_rpt_t rpt_s0;
+  (* preserve *) logic                      rpt_valid_s0;
+  (* preserve *) hft_types_pkg::order_rpt_t rpt_s0;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -149,8 +165,7 @@ module order_fsm (
     end else begin
       rpt_valid_s1 <= rpt_valid_s0;
       rpt_s1       <= rpt_s0;
-      
-      // Force hardware registers immediately after the 32-bit equality checks
+
       token_match_s1[0] <= out_tab[0].valid && (out_tab[0].token_id == rpt_s0.token_id);
       token_match_s1[1] <= out_tab[1].valid && (out_tab[1].token_id == rpt_s0.token_id);
       token_match_s1[2] <= out_tab[2].valid && (out_tab[2].token_id == rpt_s0.token_id);
@@ -178,9 +193,8 @@ module order_fsm (
       rpt_valid_s2   <= rpt_valid_s1;
       rpt_s2         <= rpt_s1;
       token_match_s2 <= token_match_s1;
-      has_match_s2   <= |token_match_s1; // Logical OR of registered bits
+      has_match_s2   <= |token_match_s1;
 
-      // Now the large multiplexer runs based purely on registered select signals
       if (token_match_s1[0]) begin
         match_data_s2  <= out_tab[0];
         matched_qty_s2 <= out_tab[0].qty;
@@ -201,13 +215,13 @@ module order_fsm (
   end
 
   // --- STAGE 3: Slow 32-bit Comparators ---
-  logic                      rpt_valid_p1;
-  hft_types_pkg::order_rpt_t rpt_p1;
-  logic [MAX_OUT-1:0]        token_match_p1;
-  logic                      has_match_p1;
-  out_ent_t                  match_data_p1;
-  logic                      is_partial_fill_p1;
-  logic                      is_complete_fill_p1;
+  (* preserve *) logic                      rpt_valid_p1;
+  (* preserve *) hft_types_pkg::order_rpt_t rpt_p1;
+  (* preserve *) logic [MAX_OUT-1:0]        token_match_p1;
+  (* preserve *) logic                      has_match_p1;
+  (* preserve *) out_ent_t                  match_data_p1;
+  (* preserve *) logic                      is_partial_fill_p1;
+  (* preserve *) logic                      is_complete_fill_p1;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -225,15 +239,13 @@ module order_fsm (
       has_match_p1   <= has_match_s2;
       match_data_p1  <= match_data_s2;
 
-      // The less-than/greater-than comparators run completely isolated
       is_partial_fill_p1  <= (rpt_s2.filled_total <  matched_qty_s2);
       is_complete_fill_p1 <= (rpt_s2.filled_total >= matched_qty_s2);
     end
   end
 
-
   // ----------------------------
-  // Cancel request FIFO
+  // Cancel request FWFT (First-Word Fall-Through) FIFO
   // ----------------------------
   typedef struct packed {
     symbol_id_t  symbol_id;
@@ -244,19 +256,19 @@ module order_fsm (
   } cancel_req_t;
 
   localparam int CDEPTH = MAX_OUT;
-  localparam int CPtrW  = $clog2(CDEPTH);
+  localparam int CPTR_W = $clog2(CDEPTH);
 
-  cancel_req_t c_fifo [CDEPTH];
-  logic [CPtrW:0] c_wr, c_rd;
-  logic c_empty, c_full;
+  // The internal circular buffer (Completely isolated from output pins!)
+  cancel_req_t c_mem [CDEPTH];
+  logic [CPTR_W:0] c_wr, c_rd;
+  logic c_mem_empty, c_mem_full;
 
-  assign c_empty = (c_wr == c_rd);
-  assign c_full  =
-      (c_wr[CPtrW] != c_rd[CPtrW]) &&
-      (c_wr[CPtrW-1:0] == c_rd[CPtrW-1:0]);
+  assign c_mem_empty = (c_wr == c_rd);
+  assign c_mem_full  = (c_wr[CPTR_W] != c_rd[CPTR_W]) && (c_wr[CPTR_W-1:0] == c_rd[CPTR_W-1:0]);
 
-  cancel_req_t c_head;
-  assign c_head = c_fifo[c_rd[CPtrW-1:0]];
+  // The dedicated Head Register (provides 0-delay access to the output mux)
+  cancel_req_t c_head_reg;
+  logic        c_head_valid;
 
   assign rpt_ready = 1'b1;
 
@@ -264,81 +276,57 @@ module order_fsm (
   // Issue FSM
   // ----------------------------
   typedef enum logic [1:0] {ISS_IDLE, ISS_REQTOK, ISS_WAITTOK, ISS_SENDENTER} iss_e;
-  iss_e iss, iss_n;
+  (* preserve *) iss_e iss;
+  iss_e iss_n;
 
   intent_t     pend_intent, pend_intent_n;
   logic        have_intent, have_intent_n;
   logic [31:0] pend_token,  pend_token_n;
 
-  logic                      ord_valid_next;
-  hft_types_pkg::order_intent_t ord_next;
+  // Pipeline registers for ALL outputs
+  logic                      ord_valid_reg;
+  hft_types_pkg::order_intent_t ord_reg;
+  logic                      tok_req_valid_reg;
+  logic                      tok_resp_ready_reg;
+
+  // *** PIPELINE REGISTERS FOR CANCEL ENQUEUE ***
+  logic do_enqueue_cancel_reg;
+  cancel_req_t cr_reg;
 
   always_comb begin
     fifo_pop        = 1'b0;
-    tok_req_valid   = 1'b0;
-    tok_resp_ready  = 1'b0;
 
-    ord_valid_next = 1'b0;
-    ord_next       = '0;
+    iss_n           = iss;
+    pend_intent_n   = pend_intent;
+    have_intent_n   = have_intent;
+    pend_token_n    = pend_token;
 
-    iss_n          = iss;
-    pend_intent_n  = pend_intent;
-    have_intent_n  = have_intent;
-    pend_token_n   = pend_token;
-
-    if (!ord_valid || ord_ready) begin
-        if (!c_empty) begin
-          ord_valid_next      = 1'b1;
-          ord_next.symbol_id  = c_head.symbol_id;
-          ord_next.strat_id   = strat_id;
-          ord_next.action     = ACT_CANCEL;
-          ord_next.side       = c_head.side;
-          ord_next.price_int  = c_head.price;
-          ord_next.qty        = c_head.intended_total;
-          ord_next.token_id   = c_head.token_id;
-        end else begin
-          unique case (iss)
-            ISS_IDLE: begin
-              if (!have_intent && !fifo_empty && !out_full) begin
-                fifo_pop        = 1'b1;
-                pend_intent_n   = fifo_rdata;
-                have_intent_n   = 1'b1;
-                iss_n           = ISS_REQTOK;
-              end
-            end
-
-            ISS_REQTOK: begin
-              tok_req_valid = 1'b1;
-              if (tok_req_ready) iss_n = ISS_WAITTOK;
-            end
-
-            ISS_WAITTOK: begin
-              tok_resp_ready = 1'b1;
-              if (tok_resp_valid) begin
-                pend_token_n = tok_resp_id;
-                iss_n        = ISS_SENDENTER;
-              end
-            end
-
-            ISS_SENDENTER: begin
-              ord_valid_next      = 1'b1;
-              ord_next.symbol_id  = pend_intent.symbol_id;
-              ord_next.strat_id   = strat_id;
-              ord_next.action     = ACT_ENTER;
-              ord_next.side       = pend_intent.side;
-              ord_next.price_int  = pend_intent.price;
-              ord_next.qty        = pend_intent.qty;
-              ord_next.token_id   = pend_token;
-
-              iss_n         = ISS_IDLE;
-              have_intent_n = 1'b0;
-            end
-
-            default: iss_n = ISS_IDLE;
-          endcase
-        end
+    if (iss == ISS_IDLE) begin
+      if (!have_intent && !fifo_empty && !out_full) begin
+        fifo_pop        = 1'b1;
+        pend_intent_n   = fifo_rdata;
+        have_intent_n   = 1'b1;
+        iss_n           = ISS_REQTOK;
+      end
+    end else if (iss == ISS_REQTOK) begin
+      if (tok_req_valid_reg && tok_req_ready) iss_n = ISS_WAITTOK;
+    end else if (iss == ISS_WAITTOK) begin
+      if (tok_resp_ready_reg && tok_resp_valid) begin
+        pend_token_n = tok_resp_id;
+        iss_n        = ISS_SENDENTER;
+      end
+    end else if (iss == ISS_SENDENTER) begin
+      if (!ord_valid_reg || ord_ready) begin
+        iss_n         = ISS_IDLE; 
+        have_intent_n = 1'b0;
+      end
     end
   end
+
+  assign ord_valid      = ord_valid_reg;
+  assign ord            = ord_reg;
+  assign tok_req_valid  = tok_req_valid_reg;
+  assign tok_resp_ready = tok_resp_ready_reg;
 
   // ----------------------------
   // Single-owner sequential block
@@ -346,8 +334,7 @@ module order_fsm (
   always_ff @(posedge clk or negedge rst_n) begin
     logic cancel_accept;
     logic enter_accept;
-    logic can_enqueue_cancel;
-    cancel_req_t cr;
+    logic read_mem;
 
     if (!rst_n) begin
       iss         <= ISS_IDLE;
@@ -355,8 +342,13 @@ module order_fsm (
       have_intent <= 1'b0;
       pend_token  <= 32'd0;
 
-      ord_valid   <= 1'b0;
-      ord         <= '0;
+      ord_valid_reg      <= 1'b0;
+      ord_reg            <= '0;
+      tok_req_valid_reg  <= 1'b0;
+      tok_resp_ready_reg <= 1'b0;
+
+      do_enqueue_cancel_reg <= 1'b0;
+      cr_reg <= '0;
 
       for (int i = 0; i < MAX_OUT; i++) begin
         out_tab[i].valid       <= 1'b0;
@@ -371,7 +363,9 @@ module order_fsm (
 
       c_wr <= '0;
       c_rd <= '0;
-      for (int j = 0; j < CDEPTH; j++) c_fifo[j] <= '0;
+      c_head_valid <= 1'b0;
+      c_head_reg <= '0;
+      for (int j = 0; j < CDEPTH; j++) c_mem[j] <= '0;
 
     end else begin
       iss         <= iss_n;
@@ -379,37 +373,87 @@ module order_fsm (
       have_intent <= have_intent_n;
       pend_token  <= pend_token_n;
 
-      if (!ord_valid || ord_ready) begin
-          ord_valid <= ord_valid_next;
-          ord       <= ord_next;
+      tok_req_valid_reg  <= (iss_n == ISS_REQTOK);
+      tok_resp_ready_reg <= (iss_n == ISS_WAITTOK) || (iss_n == ISS_REQTOK);
+
+      // --- 1. Evaluate Enqueue Decision ---
+      do_enqueue_cancel_reg <= 1'b0;
+      if (rpt_valid_p1 && has_match_p1 && (rpt_p1.kind == RPT_EXEC)) begin
+        if (is_partial_fill_p1 && !match_data_p1.cancel_sent && !c_mem_full) begin
+          do_enqueue_cancel_reg <= 1'b1;
+          cr_reg.symbol_id      <= match_data_p1.symbol_id;
+          cr_reg.token_id       <= match_data_p1.token_id;
+          cr_reg.side           <= match_data_p1.side;
+          cr_reg.price          <= match_data_p1.price;
+          cr_reg.intended_total <= rpt_p1.filled_total;
+        end
       end
 
-      cancel_accept = (ord_valid && ord_ready && (ord.action == ACT_CANCEL));
-      enter_accept  = (ord_valid && ord_ready && (ord.action == ACT_ENTER));
-
-      if (cancel_accept) begin
-        c_rd <= c_rd + 1'b1;
+      // --- 2. Write to FWFT Memory (Isolated from output routing) ---
+      if (do_enqueue_cancel_reg) begin
+          c_mem[c_wr[CPTR_W-1:0]] <= cr_reg;
+          c_wr <= c_wr + 1'b1;
       end
 
-      can_enqueue_cancel = (!c_full) || cancel_accept;
+      // --- 3. Output Muxing (Reads directly from c_head_reg) ---
+      if (!ord_valid_reg || ord_ready) begin
+          if (c_head_valid) begin
+            ord_valid_reg       <= 1'b1;
+            ord_reg.symbol_id   <= c_head_reg.symbol_id;
+            ord_reg.strat_id    <= strat_id;
+            ord_reg.action      <= ACT_CANCEL;
+            ord_reg.side        <= c_head_reg.side;
+            ord_reg.price_int   <= c_head_reg.price;
+            ord_reg.qty         <= c_head_reg.intended_total;
+            ord_reg.token_id    <= c_head_reg.token_id;
+          end else if (iss == ISS_SENDENTER) begin
+            ord_valid_reg       <= 1'b1;
+            ord_reg.symbol_id   <= pend_intent.symbol_id;
+            ord_reg.strat_id    <= strat_id;
+            ord_reg.action      <= ACT_ENTER;
+            ord_reg.side        <= pend_intent.side;
+            ord_reg.price_int   <= pend_intent.price;
+            ord_reg.qty         <= pend_intent.qty;
+            ord_reg.token_id    <= pend_token;
+          end else begin
+            ord_valid_reg <= 1'b0;
+          end
+      end
 
-      if (enter_accept && has_free) begin
-        out_tab[free_i].valid       <= 1'b1;
-        out_tab[free_i].symbol_id   <= ord.symbol_id;
-        out_tab[free_i].token_id    <= ord.token_id;
-        out_tab[free_i].side        <= ord.side;
-        out_tab[free_i].price       <= ord.price_int;
-        out_tab[free_i].qty         <= ord.qty;
+      // --- 4. Update the FWFT Head Register ---
+      cancel_accept = c_head_valid && (!ord_valid_reg || ord_ready);
+      enter_accept  = !c_head_valid && (!ord_valid_reg || ord_ready) && (iss == ISS_SENDENTER);
+
+      read_mem = !c_mem_empty && (!c_head_valid || cancel_accept);
+
+      if (read_mem) begin
+          c_rd <= c_rd + 1'b1;
+          c_head_valid <= 1'b1;
+          c_head_reg <= c_mem[c_rd[CPTR_W-1:0]];
+      end else if (cancel_accept) begin
+          c_head_valid <= 1'b0;
+      end
+
+      // --- Output table update ---
+      if ((iss == ISS_SENDENTER) && has_free) begin
+        out_tab[free_i].symbol_id   <= pend_intent.symbol_id;
+        out_tab[free_i].token_id    <= pend_token;
+        out_tab[free_i].side        <= pend_intent.side;
+        out_tab[free_i].price       <= pend_intent.price;
+        out_tab[free_i].qty         <= pend_intent.qty;
         out_tab[free_i].filled_tot  <= 32'd0;
         out_tab[free_i].cancel_sent <= 1'b0;
+
+        if (enter_accept) begin
+            out_tab[free_i].valid   <= 1'b1;
+        end
       end
 
-      // Update Array Registers using the pipelined `is_complete_fill_p1`
+      // --- Process reports to update outstanding orders ---
       if (rpt_valid_p1) begin
         for (int i = 0; i < MAX_OUT; i++) begin
           if (token_match_p1[i]) begin
             out_tab[i].filled_tot <= rpt_p1.filled_total;
-
             unique case (rpt_p1.kind)
               RPT_EXEC: begin
                 if (is_complete_fill_p1) begin
@@ -422,22 +466,6 @@ module order_fsm (
               RPT_REJECT:   out_tab[i].valid <= 1'b0;
               default: ;
             endcase
-          end
-        end
-      end
-
-      // Push to Cancel FIFO using the pipelined `is_partial_fill_p1`
-      if (rpt_valid_p1 && has_match_p1 && (rpt_p1.kind == RPT_EXEC)) begin
-        if (is_partial_fill_p1 && !match_data_p1.cancel_sent) begin
-          if (can_enqueue_cancel) begin
-            cr.symbol_id      = match_data_p1.symbol_id;
-            cr.token_id       = match_data_p1.token_id;
-            cr.side           = match_data_p1.side;
-            cr.price          = match_data_p1.price;
-            cr.intended_total = rpt_p1.filled_total;
-
-            c_fifo[c_wr[CPtrW-1:0]] <= cr;
-            c_wr <= c_wr + 1'b1;
           end
         end
       end
