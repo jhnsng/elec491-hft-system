@@ -262,6 +262,16 @@ wire [31:0] best_ask_price;
 wire [31:0] best_ask_qty;
 wire        best_ask_valid;
 
+// OUCH inbound
+wire        algo_cmd_valid;
+wire        algo_cmd_ready;
+wire [1:0]  algo_cmd_type; // 0=Enter, 1=Cancel
+wire [31:0] algo_qty;
+wire [1:0]  algo_side;
+wire [63:0] algo_symbol;
+wire [63:0] algo_price_ticks;
+wire [31:0] algo_orig_ref;
+
 
 //=======================================================
 //  Structural coding
@@ -482,5 +492,77 @@ hft_top_system The_System (
 		.sw_price_qty    (SW[0]),  // SW[0]: 0=Price, 1=Quantity
 		.sw_bid_ask      (SW[1])   // SW[1]: 0=Bid, 1=Ask
 	);
+
+	// OUCH modules
+
+	ouch_inbound u_ouch_inbound (
+    .clk               (CLOCK_50),
+    .rst_n             (KEY[0]),
+
+    // Algorithm Block Commands (connected to mock_algo_stimulus)
+    .algo_cmd_valid    (algo_cmd_valid),
+    .algo_cmd_ready    (algo_cmd_ready),
+    .algo_cmd_type     (algo_cmd_type),
+    .algo_qty          (algo_qty),
+    .algo_side         (algo_side),
+    .algo_symbol       (algo_symbol),
+    .algo_price_ticks  (algo_price_ticks),
+    .algo_orig_ref     (algo_orig_ref),
+
+    // Avalon-ST Source
+    .st_data           (fifo_fpga_to_hps_in_data),
+    .st_valid          (fifo_fpga_to_hps_in_valid),
+    .st_ready          (fifo_fpga_to_hps_in_ready),
+    .st_startofpacket  (fifo_fpga_to_hps_in_sop),
+    .st_endofpacket    (fifo_fpga_to_hps_in_eop),
+    .st_empty          (fifo_fpga_to_hps_in_empty)
+);
+
+
+/* 	ouch_outbound u_ouch_outbound (
+    .clk(),
+    .rst_n(),
+
+    // Avalon-ST Sink
+    .st_data(),
+    .st_valid(),
+    .st_ready(),
+    .st_startofpacket(),
+    .st_endofpacket(),
+    .st_empty(),
+
+    // Algorithm Block Signals
+    .algo_valid(),
+    .algo_msg_type(),
+    .algo_timestamp(),
+    .algo_userref(),
+    .algo_qty(),
+    .algo_price(),
+    .algo_symbol(),
+    .algo_side(),
+    .algo_order_ref(),
+    .algo_match_id(),
+    .algo_reason()
+	); */
+
+
+	mock_algo_stimulus_ouch u_mock_algo (
+    .clk               (CLOCK_50),
+    .rst_n             (KEY[0]),
+
+    // Connect outputs to signals with the same name
+    .algo_cmd_valid    (algo_cmd_valid),
+    .algo_cmd_ready    (algo_cmd_ready),
+    .algo_cmd_type     (algo_cmd_type),
+    .algo_qty          (algo_qty),
+    .algo_side         (algo_side),
+    .algo_symbol       (algo_symbol),
+    .algo_price_ticks  (algo_price_ticks),
+    .algo_orig_ref     (algo_orig_ref),
+
+    .done              (done)
+);
+
+
 
 endmodule // end top level
