@@ -1,16 +1,13 @@
 //================================================================================
-// OUCH 5.0 Inbound Formatter (Nasdaq) - Enter Order 'O' + Cancel 'X'
-// Avalon-ST output (byte stream), one OUCH message == one Avalon-ST "packet"
+// OUCH Inbound Formatter (Modified Internal/Test Format)
+// Enter Order 'O' + Cancel 'X'
+// Avalon-ST output (byte stream), one message == one Avalon-ST "packet"
 //
-// Inbound messages implemented:
-//   'O' Enter Order (47 bytes base, no appendage)
-//   'X' Cancel Order (11 bytes base, no appendage)
-//
-// Outbound messages (from exchange) such as 'A','C','E' are NOT generated here
-// They require a separate OUCH outbound parser module
-//
-// Avalon-ST refs:
-// - valid/ready handshaking and packet signals sop/eop are defined by Avalon-ST
+// NOTE:
+// This version REMOVES the 2-byte appendage-length field from both messages.
+// Therefore this is NOT wire-compliant OUCH 5.0 anymore.
+//   'O' Enter Order = 45 bytes
+//   'X' Cancel Order = 9 bytes
 //================================================================================
 `timescale 1ns/1ps
 
@@ -28,7 +25,7 @@ module ouch_inbound (
     input  logic [63:0] algo_price_ticks,
     input  logic [31:0] algo_orig_ref,
 
-    //=== OUTPUT: Avalon-ST Source (32-bit Little Endian) ===
+    //=== OUTPUT: Avalon-ST Source (32-bit stream) ===
     output logic [31:0] st_data,
     output logic        st_valid,
     input  logic        st_ready,
@@ -41,15 +38,16 @@ module ouch_inbound (
     localparam logic [7:0] OUCH_TYPE_ADD    = 8'h4F; // 'O'
     localparam logic [7:0] OUCH_TYPE_CANCEL = 8'h58; // 'X'
     
-    localparam int unsigned ADD_MSG_BYTES    = 47; 
-    localparam int unsigned CANCEL_MSG_BYTES = 11;
+    // Modified lengths with appendage-length field removed
+    localparam int unsigned ADD_MSG_BYTES    = 45;
+    localparam int unsigned CANCEL_MSG_BYTES = 9;
 
-    localparam logic [7:0] TIF_DAY         = 8'h30; // 'O'
-    localparam logic [7:0] DISPLAY_VISIBLE = 8'h59; // 'Y'
-    localparam logic [7:0] CAPACITY_PRIN   = 8'h50; // 'P'
-    localparam logic [7:0] IMS_INELIG      = 8'h4E; // 'N'
-    localparam logic [7:0] CROSS_NORMAL    = 8'h4E; // 'N'
-    localparam logic [7:0] SPACE           = 8'h20; // ' '
+    localparam logic [7:0] TIF_DAY         = 8'h30;
+    localparam logic [7:0] DISPLAY_VISIBLE = 8'h59;
+    localparam logic [7:0] CAPACITY_PRIN   = 8'h50;
+    localparam logic [7:0] IMS_INELIG      = 8'h4E;
+    localparam logic [7:0] CROSS_NORMAL    = 8'h4E;
+    localparam logic [7:0] SPACE           = 8'h20;
 
     // 2) FIFO Definitions
     typedef struct packed {
@@ -89,10 +87,10 @@ module ouch_inbound (
                 fifo_mem[wr_ptr].userref  <= (algo_cmd_type == 2'b00) ? userref_counter : algo_orig_ref;
                 
                 wr_ptr <= wr_ptr + 3'd1;
-                if (algo_cmd_type == 2'b00) userref_counter <= userref_counter + 32'd1;
+                if (algo_cmd_type == 2'b00)
+                    userref_counter <= userref_counter + 32'd1;
             end
 
-            // Count Update 
             if (push && !pop)      fifo_count <= fifo_count + 4'd1;
             else if (!push && pop) fifo_count <= fifo_count - 4'd1;
         end
@@ -100,8 +98,10 @@ module ouch_inbound (
 
     // FIFO Read Pointer Update
     always_ff @(posedge clk) begin
-        if (!rst_n) rd_ptr <= 3'd0;
-        else if (pop) rd_ptr <= rd_ptr + 3'd1;
+        if (!rst_n)
+            rd_ptr <= 3'd0;
+        else if (pop)
+            rd_ptr <= rd_ptr + 3'd1;
     end
 
     // 3) Serializer State Machine
@@ -113,86 +113,86 @@ module ouch_inbound (
     logic [3:0]  target_words;    
     logic [1:0]  final_empty;     
 
-    // Helper to calculate packet length parameters
-    function automatic void calc_packet_params(input logic [1:0] type_in, output logic [3:0] tw, output logic [1:0] fe);
+    function automatic void calc_packet_params(
+        input  logic [1:0] type_in,
+        output logic [3:0] tw,
+        output logic [1:0] fe
+    );
         if (type_in == 2'b00) begin
-            tw = (ADD_MSG_BYTES + 3) >> 2; 
-            fe = 2'd1; 
+            // 45 bytes -> 12 words, 1 valid bytes in last word -> empty = 3
+            tw = (ADD_MSG_BYTES + 3) >> 2;
+            fe = 2'd3;
         end else begin
-            tw = (CANCEL_MSG_BYTES + 3) >> 2; 
-            fe = 2'd1;
+            // 9 bytes -> 3 words, 1 valid byte in last word -> empty = 3
+            tw = (CANCEL_MSG_BYTES + 3) >> 2;
+            fe = 2'd3;
         end
     endfunction
 
-    // Logic to load new command
-    logic load_next;
     logic packet_done;
-    
     assign packet_done = (state == ST_STREAM) && st_ready && (word_count == target_words - 1);
 
-    // We pop when we are finishing a packet AND we are loading the NEXT one, 
-    // OR when we are IDLE and starting the first one.
-    // To simplify: Pop whenever we commit to consuming a FIFO entry.
-    // In IDLE: Pop if !empty.
-    // In STREAM: Pop if packet_done AND !empty (chaining).
     assign pop = (state == ST_IDLE && !fifo_empty) || (packet_done && !fifo_empty);
 
     always_ff @(posedge clk) begin
         if (!rst_n) begin
-            state      <= ST_IDLE;
-            word_count <= 0;
-            cmd_r      <= '0;
+            state        <= ST_IDLE;
+            word_count   <= 4'd0;
+            target_words <= 4'd0;
+            final_empty  <= 2'd0;
+            cmd_r        <= '0;
         end else begin
             case (state)
                 ST_IDLE: begin
                     if (!fifo_empty) begin
-                        // Zero-latency start
                         cmd_r <= fifo_mem[rd_ptr];
                         calc_packet_params(fifo_mem[rd_ptr].cmd_type, target_words, final_empty);
-                        
-                        state <= ST_STREAM;
-                        word_count <= 0;
+                        state      <= ST_STREAM;
+                        word_count <= 4'd0;
                     end
                 end
 
                 ST_STREAM: begin
                     if (st_ready) begin
                         if (word_count == target_words - 1) begin
-                            // Packet Complete. Check for chaining.
                             if (!fifo_empty) begin
-                                // Chain immediately
                                 cmd_r <= fifo_mem[rd_ptr];
                                 calc_packet_params(fifo_mem[rd_ptr].cmd_type, target_words, final_empty);
-                                word_count <= 0;
-                                // State remains ST_STREAM
+                                word_count <= 4'd0;
                             end else begin
                                 state <= ST_IDLE;
                             end
                         end else begin
-                            word_count <= word_count + 1;
+                            word_count <= word_count + 4'd1;
                         end
                     end
+                end
+
+                default: begin
+                    state <= ST_IDLE;
                 end
             endcase
         end
     end
 
-    // 4) Byte Multiplexer (Combinational)
+    // 4) Byte Multiplexer
     logic [7:0] b0, b1, b2, b3;
-    
+
     function automatic logic [7:0] get_ouch_byte(input [5:0] byte_idx);
-        if (cmd_r.cmd_type == 2'b00) begin // === ENTER ORDER ===
+        if (cmd_r.cmd_type == 2'b00) begin
+            // === ENTER ORDER === 45 bytes total
             case (byte_idx)
                 6'd0:  return OUCH_TYPE_ADD;
                 6'd1:  return cmd_r.userref[31:24];
                 6'd2:  return cmd_r.userref[23:16];
                 6'd3:  return cmd_r.userref[15:8];
                 6'd4:  return cmd_r.userref[7:0];
-                6'd5:  return (cmd_r.side == 2'b00) ? 8'h42 : 8'h53; 
+                6'd5:  return (cmd_r.side == 2'b00) ? 8'h42 : 8'h53; // 'B' or 'S'
                 6'd6:  return cmd_r.qty[31:24];
                 6'd7:  return cmd_r.qty[23:16];
                 6'd8:  return cmd_r.qty[15:8];
                 6'd9:  return cmd_r.qty[7:0];
+
                 // Symbol
                 6'd10: return cmd_r.symbol[63:56];
                 6'd11: return cmd_r.symbol[55:48];
@@ -202,6 +202,7 @@ module ouch_inbound (
                 6'd15: return cmd_r.symbol[23:16];
                 6'd16: return cmd_r.symbol[15:8];
                 6'd17: return cmd_r.symbol[7:0];
+
                 // Price
                 6'd18: return cmd_r.price[63:56];
                 6'd19: return cmd_r.price[55:48];
@@ -211,20 +212,23 @@ module ouch_inbound (
                 6'd23: return cmd_r.price[23:16];
                 6'd24: return cmd_r.price[15:8];
                 6'd25: return cmd_r.price[7:0];
-                // Fixed Fields
+
+                // Fixed fields
                 6'd26: return TIF_DAY;
                 6'd27: return DISPLAY_VISIBLE;
                 6'd28: return CAPACITY_PRIN;
                 6'd29: return IMS_INELIG;
                 6'd30: return CROSS_NORMAL;
-                // ClOrdID (Spaces)
-                6'd31, 6'd32, 6'd33, 6'd34, 6'd35, 6'd36, 6'd37, 
-                6'd38, 6'd39, 6'd40, 6'd41, 6'd42, 6'd43, 6'd44: return SPACE;
-                // Appendage
-                6'd45, 6'd46: return 8'h00;
+
+                // ClOrdID (14 spaces)
+                6'd31, 6'd32, 6'd33, 6'd34, 6'd35, 6'd36, 6'd37,
+                6'd38, 6'd39, 6'd40, 6'd41, 6'd42, 6'd43, 6'd44:
+                    return SPACE;
+
                 default: return 8'h00;
             endcase
-        end else begin // === CANCEL ORDER ===
+        end else begin
+            // === CANCEL ORDER === 9 bytes total
             case (byte_idx)
                 6'd0:  return OUCH_TYPE_CANCEL;
                 6'd1:  return cmd_r.userref[31:24];
@@ -235,32 +239,28 @@ module ouch_inbound (
                 6'd6:  return cmd_r.qty[23:16];
                 6'd7:  return cmd_r.qty[15:8];
                 6'd8:  return cmd_r.qty[7:0];
-                // Appendage
-                6'd9, 6'd10: return 8'h00; 
                 default: return 8'h00;
             endcase
         end
     endfunction
 
-    // Muxing logic
     logic [5:0] base_idx;
-    assign base_idx = {word_count, 2'b00}; 
+    assign base_idx = {word_count, 2'b00};
 
     assign b0 = get_ouch_byte(base_idx);
-    assign b1 = get_ouch_byte(base_idx + 1);
-    assign b2 = get_ouch_byte(base_idx + 2);
-    assign b3 = get_ouch_byte(base_idx + 3);
+    assign b1 = get_ouch_byte(base_idx + 6'd1);
+    assign b2 = get_ouch_byte(base_idx + 6'd2);
+    assign b3 = get_ouch_byte(base_idx + 6'd3);
 
     // Output Assignment
     always_comb begin
         st_valid         = (state == ST_STREAM);
-        st_startofpacket = (state == ST_STREAM && word_count == 0);
+        st_startofpacket = (state == ST_STREAM && word_count == 4'd0);
         st_endofpacket   = (state == ST_STREAM && word_count == target_words - 1);
-        
-        // For 32-bit Little Endian, the lowest byte address (Byte 0) maps to st_data[7:0].
-        // OUCH Byte 0 (Type) -> st_data[7:0]
-        st_data          = {b3, b2, b1, b0}; 
-        
+
+        // Byte 0 on st_data[31:24] in this packing
+        st_data          = {b0, b1, b2, b3};
+
         st_empty         = st_endofpacket ? final_empty : 2'd0;
     end
 
