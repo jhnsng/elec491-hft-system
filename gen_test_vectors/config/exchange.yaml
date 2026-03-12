@@ -1,0 +1,28 @@
+# Exchange Layer Configuration
+# Produces ITCH 5.0 length-prefixed binary stream format (ITCHStream wire format):
+#   [2-byte big-endian length][ITCH message body]
+
+# Layer identifier
+layer: exchange
+
+# Excel sheet name
+sheet_name: Exchange_Test
+
+# Columns to parse from Excel
+columns:
+  - Message Type
+  - Timestamp
+  - Order ID
+  - Side
+  - Shares
+  - Stock
+  - Price
+
+# Data type specifications for each column
+data_types:
+  Order ID: int
+  Shares: int
+  Price: float
+  Message Type: str
+  Side: str
+  Stock: str
