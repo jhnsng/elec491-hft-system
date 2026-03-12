@@ -1,0 +1,27 @@
+# NetIO Layer Configuration
+# This configuration specifies which columns to parse from Excel for NetIO layer test vectors
+
+# Layer identifier
+layer: netio
+
+# Excel sheet name (use 0 for first sheet by default)
+sheet_name: NetIO_Test
+
+# Columns to parse from Excel
+# Format: List of column names or mappings {excel_column: output_name}
+columns:
+  - Message Type
+  - Order ID
+  - Side
+  - Shares
+  - Stock
+  - Price
+
+# Optional: Data type specifications for each column
+data_types:
+  Order ID: int
+  Shares: int
+  Price: float
+  Message Type: str
+  Side: str
+  Stock: str
