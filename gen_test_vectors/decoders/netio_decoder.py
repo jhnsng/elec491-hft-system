@@ -19,7 +19,6 @@ class NetioDecoder(BaseDecoder):
         super().__init__(config, output_dir)
         self.packet_counter = 0
         self.stock_locate_counter = 1
-        self.tracking_counter = 1
     
     def encode_add_order(self, row: Dict[str, Any]) -> bytes:
         """
@@ -36,22 +35,19 @@ class NetioDecoder(BaseDecoder):
         - Price (4 bytes, big endian)
         """
         msg_type = ord(row['Message Type'])
-        stock_locate = self.stock_locate_counter
-        tracking_num = self.tracking_counter
-        self.tracking_counter += 1
+        stock_locate = 0
+        tracking_num = 0
         
-        timestamp = 0  # Can be enhanced to use actual timestamp
+        timestamp = int(row['Timestamp'])  # Use parsed timestamp from Excel
         order_id = int(row['Order ID'])
         side = ord(row['Side'])  # 'B' or 'S'
         shares = int(row['Shares'])
         stock = row['Stock'].ljust(8)[:8]  # Pad/truncate to 8 chars
         price = float(row['Price'])
         
-        # Convert price to integer representation (assuming price * 10000 for 4 decimal places)
-        # Based on examples: appears to be custom encoding
-        # For 30.20 -> 0x6DC4 = 28100, for 20.00 -> 0x6D60 = 28000
-        # Approximation: price * 1400 (may need calibration based on actual spec)
-        price_encoded = int(price * 1400)
+        # Convert price to integer representation (price * 100 for 2 decimal places)
+        # Example: 280.00 -> 28000 (0x6D60), 281.00 -> 28100 (0x6DC4)
+        price_encoded = int(price * 100)
         
         packet = struct.pack(
             '>B H H 6s Q B I 8s I',
@@ -80,11 +76,10 @@ class NetioDecoder(BaseDecoder):
         - Shares Cancelled (4 bytes, big endian)
         """
         msg_type = ord(row['Message Type'])
-        stock_locate = self.stock_locate_counter
-        tracking_num = self.tracking_counter
-        self.tracking_counter += 1
+        stock_locate = 0
+        tracking_num = 0
         
-        timestamp = 0
+        timestamp = int(row['Timestamp'])  # Use parsed timestamp from Excel
         order_id = int(row['Order ID'])
         shares = int(row['Shares'])
         
@@ -113,11 +108,10 @@ class NetioDecoder(BaseDecoder):
         - Match Number (8 bytes, big endian)
         """
         msg_type = ord(row['Message Type'])
-        stock_locate = self.stock_locate_counter
-        tracking_num = self.tracking_counter
-        self.tracking_counter += 1
+        stock_locate = 0
+        tracking_num = 0
         
-        timestamp = 0
+        timestamp = int(row['Timestamp'])  # Use parsed timestamp from Excel
         order_id = int(row['Order ID'])
         shares = int(row['Shares'])
         match_number = self.packet_counter  # Use packet counter as match number

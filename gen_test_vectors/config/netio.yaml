@@ -11,6 +11,7 @@ sheet_name: NetIO_Test
 # Format: List of column names or mappings {excel_column: output_name}
 columns:
   - Message Type
+  - Timestamp
   - Order ID
   - Side
   - Shares
