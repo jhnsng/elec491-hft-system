@@ -40,53 +40,10 @@ module order_fsm (
     logic [31:0] qty;
   } intent_t;
 
-  // ----------------------------
-  // Intent FIFO 
-  // ----------------------------
-  localparam int FIFO_DEPTH = 4;
-  localparam int PTR_W      = $clog2(FIFO_DEPTH);
-
-  intent_t fifo_mem [FIFO_DEPTH];
-  logic [PTR_W:0] wr_ptr, rd_ptr;
-  logic fifo_full, fifo_empty;
-
-  assign fifo_empty = (wr_ptr == rd_ptr);
-  assign fifo_full  =
-      (wr_ptr[PTR_W] != rd_ptr[PTR_W]) &&
-      (wr_ptr[PTR_W-1:0] == rd_ptr[PTR_W-1:0]);
-
-  intent_t fifo_rdata;
-  assign fifo_rdata = fifo_mem[rd_ptr[PTR_W-1:0]];
-
-  logic fifo_pop;
-
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      wr_ptr <= '0;
-    end else if (sig_valid && sig_ready) begin
-      fifo_mem[wr_ptr[PTR_W-1:0]].symbol_id <= symbol_id;
-      fifo_mem[wr_ptr[PTR_W-1:0]].side      <= sig_side;
-      fifo_mem[wr_ptr[PTR_W-1:0]].price     <= sig_price;
-      fifo_mem[wr_ptr[PTR_W-1:0]].qty       <= sig_qty;
-      wr_ptr <= wr_ptr + 1'b1;
-    end
-  end
-
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      rd_ptr <= '0;
-    end else if (fifo_pop && !fifo_empty) begin
-      rd_ptr <= rd_ptr + 1'b1;
-    end
-  end
-
-  // ----------------------------
-  // Outstanding table (token->state)
-  // ----------------------------
-  localparam int MAX_OUT = 4;
+  // INCREASED FOR HISTORICAL DATA BURSTS
+  localparam int MAX_OUT = 16;
 
   typedef struct packed {
-    logic        valid;
     symbol_id_t  symbol_id;
     logic [31:0] token_id;
     side_e       side;
@@ -96,84 +53,63 @@ module order_fsm (
     logic        cancel_sent;
   } out_ent_t;
 
+  logic [MAX_OUT-1:0] out_valid;
   out_ent_t out_tab [MAX_OUT];
 
-  // ----------------------------
-  // Free Slot Finder (Pipelined)
-  // ----------------------------
-  logic [1:0] free_i, free_i_next;
+  logic [3:0] free_i, free_i_next;
   logic       has_free, has_free_next;
 
+  // UNROLLED: 16-way Priority Encoder
   always_comb begin
-    free_i_next = 2'd0;
+    free_i_next = 4'd0;
     has_free_next = 1'b0;
-    if      (!out_tab[0].valid) begin free_i_next = 2'd0; has_free_next = 1'b1; end
-    else if (!out_tab[1].valid) begin free_i_next = 2'd1; has_free_next = 1'b1; end
-    else if (!out_tab[2].valid) begin free_i_next = 2'd2; has_free_next = 1'b1; end
-    else if (!out_tab[3].valid) begin free_i_next = 2'd3; has_free_next = 1'b1; end
-  end
-
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      free_i <= 2'd0;
-      has_free <= 1'b0;
-    end else begin
-      free_i <= free_i_next;
-      has_free <= has_free_next;
-    end
+    if      (!out_valid[0])  begin free_i_next = 4'd0;  has_free_next = 1'b1; end
+    else if (!out_valid[1])  begin free_i_next = 4'd1;  has_free_next = 1'b1; end
+    else if (!out_valid[2])  begin free_i_next = 4'd2;  has_free_next = 1'b1; end
+    else if (!out_valid[3])  begin free_i_next = 4'd3;  has_free_next = 1'b1; end
+    else if (!out_valid[4])  begin free_i_next = 4'd4;  has_free_next = 1'b1; end
+    else if (!out_valid[5])  begin free_i_next = 4'd5;  has_free_next = 1'b1; end
+    else if (!out_valid[6])  begin free_i_next = 4'd6;  has_free_next = 1'b1; end
+    else if (!out_valid[7])  begin free_i_next = 4'd7;  has_free_next = 1'b1; end
+    else if (!out_valid[8])  begin free_i_next = 4'd8;  has_free_next = 1'b1; end
+    else if (!out_valid[9])  begin free_i_next = 4'd9;  has_free_next = 1'b1; end
+    else if (!out_valid[10]) begin free_i_next = 4'd10; has_free_next = 1'b1; end
+    else if (!out_valid[11]) begin free_i_next = 4'd11; has_free_next = 1'b1; end
+    else if (!out_valid[12]) begin free_i_next = 4'd12; has_free_next = 1'b1; end
+    else if (!out_valid[13]) begin free_i_next = 4'd13; has_free_next = 1'b1; end
+    else if (!out_valid[14]) begin free_i_next = 4'd14; has_free_next = 1'b1; end
+    else if (!out_valid[15]) begin free_i_next = 4'd15; has_free_next = 1'b1; end
   end
 
   logic out_full;
   assign out_full = !has_free;
 
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      sig_ready <= 1'b0;
-    end else begin
-      sig_ready <= !fifo_full && !out_full;
-    end
-  end
+  // Input FIFO
+  localparam int FIFO_DEPTH = 16; // Increased to match MAX_OUT scale
+  localparam int PTR_W      = $clog2(FIFO_DEPTH);
 
-   // ----------------------------
-  // Token Matcher & Pipelining
-  // ----------------------------
+  intent_t i_mem [FIFO_DEPTH];
+  logic [PTR_W:0] i_wr, i_rd;
+  logic i_mem_empty, i_mem_full;
 
-  // --- STAGE 0: Incoming Report Buffer ---
-  (* preserve *) logic                      rpt_valid_s0;
-  (* preserve *) hft_types_pkg::order_rpt_t rpt_s0;
+  assign i_mem_empty = (i_wr == i_rd);
+  assign i_mem_full  = (i_wr[PTR_W] != i_rd[PTR_W]) && (i_wr[PTR_W-1:0] == i_rd[PTR_W-1:0]);
 
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      rpt_valid_s0 <= 1'b0;
-      rpt_s0       <= '0;
-    end else begin
-      rpt_valid_s0 <= rpt_valid;
-      rpt_s0       <= rpt;
-    end
-  end
+  intent_t i_head_reg;
+  logic    i_head_valid;
+  logic    i_pop;
+  logic    i_read_mem_reg;
 
-  // --- STAGE 1: Match Generation (Isolates the Equal6 comparators) ---
-  logic [MAX_OUT-1:0]        token_match_s1;
+  assign sig_ready = !i_mem_full && !out_full;
+
+  logic                     rpt_valid_s0;
+  hft_types_pkg::order_rpt_t rpt_s0;
+
+  // Added compiler directives to completely disable Quartus Register Retiming on these nodes
+  (* preserve, dont_retime *) logic [MAX_OUT-1:0]        token_match_s1;
   logic                      rpt_valid_s1;
   hft_types_pkg::order_rpt_t rpt_s1;
 
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      token_match_s1 <= '0;
-      rpt_valid_s1   <= 1'b0;
-      rpt_s1         <= '0;
-    end else begin
-      rpt_valid_s1 <= rpt_valid_s0;
-      rpt_s1       <= rpt_s0;
-
-      token_match_s1[0] <= out_tab[0].valid && (out_tab[0].token_id == rpt_s0.token_id);
-      token_match_s1[1] <= out_tab[1].valid && (out_tab[1].token_id == rpt_s0.token_id);
-      token_match_s1[2] <= out_tab[2].valid && (out_tab[2].token_id == rpt_s0.token_id);
-      token_match_s1[3] <= out_tab[3].valid && (out_tab[3].token_id == rpt_s0.token_id);
-    end
-  end
-
-  // --- STAGE 2: Data Muxing (Uses the registered matches) ---
   logic                      rpt_valid_s2;
   hft_types_pkg::order_rpt_t rpt_s2;
   logic                      has_match_s2;
@@ -181,72 +117,14 @@ module order_fsm (
   logic [31:0]               matched_qty_s2;
   logic [MAX_OUT-1:0]        token_match_s2;
 
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      rpt_valid_s2   <= 1'b0;
-      rpt_s2         <= '0;
-      has_match_s2   <= 1'b0;
-      match_data_s2  <= '0;
-      matched_qty_s2 <= 32'd0;
-      token_match_s2 <= '0;
-    end else begin
-      rpt_valid_s2   <= rpt_valid_s1;
-      rpt_s2         <= rpt_s1;
-      token_match_s2 <= token_match_s1;
-      has_match_s2   <= |token_match_s1;
+  logic                      rpt_valid_p1;
+  hft_types_pkg::order_rpt_t rpt_p1;
+  logic [MAX_OUT-1:0]        token_match_p1;
+  logic                      has_match_p1;
+  out_ent_t                  match_data_p1;
+  logic                      is_partial_fill_p1;
+  logic                      is_complete_fill_p1;
 
-      if (token_match_s1[0]) begin
-        match_data_s2  <= out_tab[0];
-        matched_qty_s2 <= out_tab[0].qty;
-      end else if (token_match_s1[1]) begin
-        match_data_s2  <= out_tab[1];
-        matched_qty_s2 <= out_tab[1].qty;
-      end else if (token_match_s1[2]) begin
-        match_data_s2  <= out_tab[2];
-        matched_qty_s2 <= out_tab[2].qty;
-      end else if (token_match_s1[3]) begin
-        match_data_s2  <= out_tab[3];
-        matched_qty_s2 <= out_tab[3].qty;
-      end else begin
-        match_data_s2  <= '0;
-        matched_qty_s2 <= 32'd0;
-      end
-    end
-  end
-
-  // --- STAGE 3: Slow 32-bit Comparators ---
-  (* preserve *) logic                      rpt_valid_p1;
-  (* preserve *) hft_types_pkg::order_rpt_t rpt_p1;
-  (* preserve *) logic [MAX_OUT-1:0]        token_match_p1;
-  (* preserve *) logic                      has_match_p1;
-  (* preserve *) out_ent_t                  match_data_p1;
-  (* preserve *) logic                      is_partial_fill_p1;
-  (* preserve *) logic                      is_complete_fill_p1;
-
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      rpt_valid_p1        <= 1'b0;
-      rpt_p1              <= '0;
-      token_match_p1      <= '0;
-      has_match_p1        <= 1'b0;
-      match_data_p1       <= '0;
-      is_partial_fill_p1  <= 1'b0;
-      is_complete_fill_p1 <= 1'b0;
-    end else begin
-      rpt_valid_p1   <= rpt_valid_s2;
-      rpt_p1         <= rpt_s2;
-      token_match_p1 <= token_match_s2;
-      has_match_p1   <= has_match_s2;
-      match_data_p1  <= match_data_s2;
-
-      is_partial_fill_p1  <= (rpt_s2.filled_total <  matched_qty_s2);
-      is_complete_fill_p1 <= (rpt_s2.filled_total >= matched_qty_s2);
-    end
-  end
-
-  // ----------------------------
-  // Cancel request FWFT (First-Word Fall-Through) FIFO
-  // ----------------------------
   typedef struct packed {
     symbol_id_t  symbol_id;
     logic [31:0] token_id;
@@ -258,7 +136,6 @@ module order_fsm (
   localparam int CDEPTH = MAX_OUT;
   localparam int CPTR_W = $clog2(CDEPTH);
 
-  // The internal circular buffer (Completely isolated from output pins!)
   cancel_req_t c_mem [CDEPTH];
   logic [CPTR_W:0] c_wr, c_rd;
   logic c_mem_empty, c_mem_full;
@@ -266,210 +143,355 @@ module order_fsm (
   assign c_mem_empty = (c_wr == c_rd);
   assign c_mem_full  = (c_wr[CPTR_W] != c_rd[CPTR_W]) && (c_wr[CPTR_W-1:0] == c_rd[CPTR_W-1:0]);
 
-  // The dedicated Head Register (provides 0-delay access to the output mux)
   cancel_req_t c_head_reg;
   logic        c_head_valid;
+  logic        c_read_mem_reg;
 
   assign rpt_ready = 1'b1;
 
-  // ----------------------------
-  // Issue FSM
-  // ----------------------------
   typedef enum logic [1:0] {ISS_IDLE, ISS_REQTOK, ISS_WAITTOK, ISS_SENDENTER} iss_e;
-  (* preserve *) iss_e iss;
-  iss_e iss_n;
+  iss_e iss, iss_n;
 
   intent_t     pend_intent, pend_intent_n;
   logic        have_intent, have_intent_n;
-  logic [31:0] pend_token,  pend_token_n;
-
-  // Pipeline registers for ALL outputs
-  logic                      ord_valid_reg;
-  hft_types_pkg::order_intent_t ord_reg;
-  logic                      tok_req_valid_reg;
-  logic                      tok_resp_ready_reg;
-
-  // *** PIPELINE REGISTERS FOR CANCEL ENQUEUE ***
+  logic [31:0] pend_token; 
+  
+  logic tok_req_valid_reg;
+  logic tok_resp_ready_reg;
   logic do_enqueue_cancel_reg;
   cancel_req_t cr_reg;
 
-  always_comb begin
-    fifo_pop        = 1'b0;
+  // --- SHADOW REGISTER PIPELINE ---
+  hft_types_pkg::order_intent_t enter_shadow_reg;
+  hft_types_pkg::order_intent_t cancel_shadow_reg;
+  logic shadow_valid_reg;
+  logic shadow_is_cancel_reg;
 
-    iss_n           = iss;
-    pend_intent_n   = pend_intent;
-    have_intent_n   = have_intent;
-    pend_token_n    = pend_token;
+  logic int_ready;
+  logic want_cancel, want_enter;
+
+  assign want_cancel = c_head_valid;
+  assign want_enter  = !c_head_valid && (iss == ISS_SENDENTER);
+
+  // The Skid Buffer logic
+  hft_types_pkg::order_intent_t skid_data;
+  logic skid_valid;
+
+  assign int_ready = !skid_valid;
+
+  always_comb begin
+    i_pop         = 1'b0;
+    iss_n         = iss; 
+    pend_intent_n = pend_intent;
+    have_intent_n = have_intent;
 
     if (iss == ISS_IDLE) begin
-      if (!have_intent && !fifo_empty && !out_full) begin
-        fifo_pop        = 1'b1;
-        pend_intent_n   = fifo_rdata;
-        have_intent_n   = 1'b1;
-        iss_n           = ISS_REQTOK;
+      if (!have_intent && i_head_valid) begin
+        pend_intent_n = i_head_reg;
       end
-    end else if (iss == ISS_REQTOK) begin
+      if (!have_intent && i_head_valid && !out_full) begin
+        i_pop         = 1'b1;
+        have_intent_n = 1'b1;
+        iss_n         = ISS_REQTOK;
+      end
+    end 
+    else if (iss == ISS_REQTOK) begin
       if (tok_req_valid_reg && tok_req_ready) iss_n = ISS_WAITTOK;
-    end else if (iss == ISS_WAITTOK) begin
-      if (tok_resp_ready_reg && tok_resp_valid) begin
-        pend_token_n = tok_resp_id;
-        iss_n        = ISS_SENDENTER;
-      end
-    end else if (iss == ISS_SENDENTER) begin
-      if (!ord_valid_reg || ord_ready) begin
+    end 
+    else if (iss == ISS_WAITTOK) begin
+      if (tok_resp_ready_reg && tok_resp_valid) iss_n = ISS_SENDENTER;
+    end 
+    else if (iss == ISS_SENDENTER) begin
+      if (want_enter && int_ready) begin 
         iss_n         = ISS_IDLE; 
         have_intent_n = 1'b0;
       end
     end
   end
 
-  assign ord_valid      = ord_valid_reg;
-  assign ord            = ord_reg;
   assign tok_req_valid  = tok_req_valid_reg;
   assign tok_resp_ready = tok_resp_ready_reg;
 
-  // ----------------------------
-  // Single-owner sequential block
-  // ----------------------------
-  always_ff @(posedge clk or negedge rst_n) begin
-    logic cancel_accept;
-    logic enter_accept;
-    logic read_mem;
+  // UNROLLED: 16-way Load Slots
+  logic load_slot_0, load_slot_1, load_slot_2, load_slot_3;
+  logic load_slot_4, load_slot_5, load_slot_6, load_slot_7;
+  logic load_slot_8, load_slot_9, load_slot_10, load_slot_11;
+  logic load_slot_12, load_slot_13, load_slot_14, load_slot_15;
 
+  logic entering_sendenter;
+  assign entering_sendenter = (iss == ISS_WAITTOK) && tok_resp_ready_reg && tok_resp_valid;
+
+  // =========================================================================
+  // BLOCK 1: CONTROL ONLY (Synchronous Reset)
+  // =========================================================================
+  always_ff @(posedge clk) begin 
     if (!rst_n) begin
-      iss         <= ISS_IDLE;
-      pend_intent <= '0;
+      free_i <= 4'd0; has_free <= 1'b0;
+      i_wr <= '0; i_rd <= '0;
+      i_head_valid <= 1'b0; i_read_mem_reg <= 1'b0;
+      rpt_valid_s0 <= 1'b0; rpt_valid_s1 <= 1'b0; rpt_valid_s2 <= 1'b0; rpt_valid_p1 <= 1'b0;
+      token_match_s2 <= '0; token_match_p1 <= '0;
+      has_match_s2 <= 1'b0; has_match_p1 <= 1'b0;
+      is_partial_fill_p1 <= 1'b0; is_complete_fill_p1 <= 1'b0;
+      c_wr <= '0; c_rd <= '0;
+      c_head_valid <= 1'b0; c_read_mem_reg <= 1'b0;
+      do_enqueue_cancel_reg <= 1'b0;
+      iss <= ISS_IDLE;
       have_intent <= 1'b0;
-      pend_token  <= 32'd0;
-
-      ord_valid_reg      <= 1'b0;
-      ord_reg            <= '0;
       tok_req_valid_reg  <= 1'b0;
       tok_resp_ready_reg <= 1'b0;
+      ord_valid <= 1'b0;
+      skid_valid <= 1'b0;
+      out_valid <= '0;
+      load_slot_0 <= 1'b0; load_slot_1 <= 1'b0; load_slot_2 <= 1'b0; load_slot_3 <= 1'b0;
+      load_slot_4 <= 1'b0; load_slot_5 <= 1'b0; load_slot_6 <= 1'b0; load_slot_7 <= 1'b0;
+      load_slot_8 <= 1'b0; load_slot_9 <= 1'b0; load_slot_10 <= 1'b0; load_slot_11 <= 1'b0;
+      load_slot_12 <= 1'b0; load_slot_13 <= 1'b0; load_slot_14 <= 1'b0; load_slot_15 <= 1'b0;
+      shadow_valid_reg <= 1'b0;
+      shadow_is_cancel_reg <= 1'b0;
+    end else begin
+      free_i <= free_i_next;
+      has_free <= has_free_next;
 
-      do_enqueue_cancel_reg <= 1'b0;
-      cr_reg <= '0;
+      if (sig_valid && sig_ready) i_wr <= i_wr + 1'b1;
 
-      for (int i = 0; i < MAX_OUT; i++) begin
-        out_tab[i].valid       <= 1'b0;
-        out_tab[i].symbol_id   <= '0;
-        out_tab[i].token_id    <= '0;
-        out_tab[i].side        <= SIDE_BUY; 
-        out_tab[i].price       <= '0;
-        out_tab[i].qty         <= '0;
-        out_tab[i].filled_tot  <= '0;
-        out_tab[i].cancel_sent <= 1'b0;
+      if (!i_mem_empty && !i_head_valid && !i_read_mem_reg) i_read_mem_reg <= 1'b1;
+      else i_read_mem_reg <= 1'b0;
+
+      if (i_read_mem_reg) begin
+        i_rd <= i_rd + 1'b1;
+        i_head_valid <= 1'b1;
+      end else if (i_pop) begin
+        i_head_valid <= 1'b0;
       end
 
-      c_wr <= '0;
-      c_rd <= '0;
-      c_head_valid <= 1'b0;
-      c_head_reg <= '0;
-      for (int j = 0; j < CDEPTH; j++) c_mem[j] <= '0;
+      // DELAY PIPELINE: Giving out_tab 1 full cycle to settle!
+      rpt_valid_s0 <= rpt_valid;
+      rpt_valid_s1 <= rpt_valid_s0;
+      rpt_valid_s2 <= rpt_valid_s1;
+      rpt_valid_p1 <= rpt_valid_s2;
 
-    end else begin
-      iss         <= iss_n;
-      pend_intent <= pend_intent_n;
-      have_intent <= have_intent_n;
-      pend_token  <= pend_token_n;
+      token_match_s2 <= token_match_s1; has_match_s2 <= |token_match_s1;
+      token_match_p1 <= token_match_s2; has_match_p1 <= has_match_s2;
 
-      tok_req_valid_reg  <= (iss_n == ISS_REQTOK);
-      tok_resp_ready_reg <= (iss_n == ISS_WAITTOK) || (iss_n == ISS_REQTOK);
+      is_partial_fill_p1  <= (rpt_s2.filled_total < matched_qty_s2);
+      is_complete_fill_p1 <= (rpt_s2.filled_total >= matched_qty_s2);
 
-      // --- 1. Evaluate Enqueue Decision ---
       do_enqueue_cancel_reg <= 1'b0;
       if (rpt_valid_p1 && has_match_p1 && (rpt_p1.kind == RPT_EXEC)) begin
         if (is_partial_fill_p1 && !match_data_p1.cancel_sent && !c_mem_full) begin
           do_enqueue_cancel_reg <= 1'b1;
-          cr_reg.symbol_id      <= match_data_p1.symbol_id;
-          cr_reg.token_id       <= match_data_p1.token_id;
-          cr_reg.side           <= match_data_p1.side;
-          cr_reg.price          <= match_data_p1.price;
-          cr_reg.intended_total <= rpt_p1.filled_total;
         end
       end
 
-      // --- 2. Write to FWFT Memory (Isolated from output routing) ---
-      if (do_enqueue_cancel_reg) begin
-          c_mem[c_wr[CPTR_W-1:0]] <= cr_reg;
-          c_wr <= c_wr + 1'b1;
-      end
+      if (do_enqueue_cancel_reg) c_wr <= c_wr + 1'b1;
 
-      // --- 3. Output Muxing (Reads directly from c_head_reg) ---
-      if (!ord_valid_reg || ord_ready) begin
-          if (c_head_valid) begin
-            ord_valid_reg       <= 1'b1;
-            ord_reg.symbol_id   <= c_head_reg.symbol_id;
-            ord_reg.strat_id    <= strat_id;
-            ord_reg.action      <= ACT_CANCEL;
-            ord_reg.side        <= c_head_reg.side;
-            ord_reg.price_int   <= c_head_reg.price;
-            ord_reg.qty         <= c_head_reg.intended_total;
-            ord_reg.token_id    <= c_head_reg.token_id;
-          end else if (iss == ISS_SENDENTER) begin
-            ord_valid_reg       <= 1'b1;
-            ord_reg.symbol_id   <= pend_intent.symbol_id;
-            ord_reg.strat_id    <= strat_id;
-            ord_reg.action      <= ACT_ENTER;
-            ord_reg.side        <= pend_intent.side;
-            ord_reg.price_int   <= pend_intent.price;
-            ord_reg.qty         <= pend_intent.qty;
-            ord_reg.token_id    <= pend_token;
-          end else begin
-            ord_valid_reg <= 1'b0;
-          end
-      end
+      if (!c_mem_empty && !c_head_valid && !c_read_mem_reg) c_read_mem_reg <= 1'b1;
+      else                                                  c_read_mem_reg <= 1'b0;
 
-      // --- 4. Update the FWFT Head Register ---
-      cancel_accept = c_head_valid && (!ord_valid_reg || ord_ready);
-      enter_accept  = !c_head_valid && (!ord_valid_reg || ord_ready) && (iss == ISS_SENDENTER);
-
-      read_mem = !c_mem_empty && (!c_head_valid || cancel_accept);
-
-      if (read_mem) begin
+      if (c_read_mem_reg) begin
           c_rd <= c_rd + 1'b1;
           c_head_valid <= 1'b1;
-          c_head_reg <= c_mem[c_rd[CPTR_W-1:0]];
-      end else if (cancel_accept) begin
+      end else if (want_cancel && int_ready) begin
           c_head_valid <= 1'b0;
       end
 
-      // --- Output table update ---
-      if ((iss == ISS_SENDENTER) && has_free) begin
-        out_tab[free_i].symbol_id   <= pend_intent.symbol_id;
-        out_tab[free_i].token_id    <= pend_token;
-        out_tab[free_i].side        <= pend_intent.side;
-        out_tab[free_i].price       <= pend_intent.price;
-        out_tab[free_i].qty         <= pend_intent.qty;
-        out_tab[free_i].filled_tot  <= 32'd0;
-        out_tab[free_i].cancel_sent <= 1'b0;
+      iss <= iss_n;
+      have_intent <= have_intent_n;
+      tok_req_valid_reg  <= (iss_n == ISS_REQTOK);
+      tok_resp_ready_reg <= (iss_n == ISS_WAITTOK) || (iss_n == ISS_REQTOK);
 
-        if (enter_accept) begin
-            out_tab[free_i].valid   <= 1'b1;
-        end
+      if (int_ready) begin
+          shadow_valid_reg     <= (want_cancel || want_enter);
+          shadow_is_cancel_reg <= want_cancel;
+      end else begin
+          shadow_valid_reg <= 1'b0;
       end
 
-      // --- Process reports to update outstanding orders ---
+      if (ord_ready || !ord_valid) begin
+         ord_valid <= skid_valid | shadow_valid_reg;
+         skid_valid <= 1'b0;
+      end else if (shadow_valid_reg && !skid_valid) begin
+         skid_valid <= 1'b1;
+      end
+
+      load_slot_0  <= entering_sendenter && (free_i == 4'd0);
+      load_slot_1  <= entering_sendenter && (free_i == 4'd1);
+      load_slot_2  <= entering_sendenter && (free_i == 4'd2);
+      load_slot_3  <= entering_sendenter && (free_i == 4'd3);
+      load_slot_4  <= entering_sendenter && (free_i == 4'd4);
+      load_slot_5  <= entering_sendenter && (free_i == 4'd5);
+      load_slot_6  <= entering_sendenter && (free_i == 4'd6);
+      load_slot_7  <= entering_sendenter && (free_i == 4'd7);
+      load_slot_8  <= entering_sendenter && (free_i == 4'd8);
+      load_slot_9  <= entering_sendenter && (free_i == 4'd9);
+      load_slot_10 <= entering_sendenter && (free_i == 4'd10);
+      load_slot_11 <= entering_sendenter && (free_i == 4'd11);
+      load_slot_12 <= entering_sendenter && (free_i == 4'd12);
+      load_slot_13 <= entering_sendenter && (free_i == 4'd13);
+      load_slot_14 <= entering_sendenter && (free_i == 4'd14);
+      load_slot_15 <= entering_sendenter && (free_i == 4'd15);
+
+      if (want_enter && int_ready && has_free) begin
+          if (free_i == 4'd0)  out_valid[0]  <= 1'b1;
+          if (free_i == 4'd1)  out_valid[1]  <= 1'b1;
+          if (free_i == 4'd2)  out_valid[2]  <= 1'b1;
+          if (free_i == 4'd3)  out_valid[3]  <= 1'b1;
+          if (free_i == 4'd4)  out_valid[4]  <= 1'b1;
+          if (free_i == 4'd5)  out_valid[5]  <= 1'b1;
+          if (free_i == 4'd6)  out_valid[6]  <= 1'b1;
+          if (free_i == 4'd7)  out_valid[7]  <= 1'b1;
+          if (free_i == 4'd8)  out_valid[8]  <= 1'b1;
+          if (free_i == 4'd9)  out_valid[9]  <= 1'b1;
+          if (free_i == 4'd10) out_valid[10] <= 1'b1;
+          if (free_i == 4'd11) out_valid[11] <= 1'b1;
+          if (free_i == 4'd12) out_valid[12] <= 1'b1;
+          if (free_i == 4'd13) out_valid[13] <= 1'b1;
+          if (free_i == 4'd14) out_valid[14] <= 1'b1;
+          if (free_i == 4'd15) out_valid[15] <= 1'b1;
+      end
+
       if (rpt_valid_p1) begin
         for (int i = 0; i < MAX_OUT; i++) begin
           if (token_match_p1[i]) begin
-            out_tab[i].filled_tot <= rpt_p1.filled_total;
             unique case (rpt_p1.kind)
               RPT_EXEC: begin
-                if (is_complete_fill_p1) begin
-                  out_tab[i].valid <= 1'b0;
-                end else if (!out_tab[i].cancel_sent) begin
-                  out_tab[i].cancel_sent <= 1'b1;
-                end
+                if (is_complete_fill_p1) out_valid[i] <= 1'b0;
               end
-              RPT_CANCELED: out_tab[i].valid <= 1'b0;
-              RPT_REJECT:   out_tab[i].valid <= 1'b0;
+              RPT_CANCELED: out_valid[i] <= 1'b0;
+              RPT_REJECT:   out_valid[i] <= 1'b0;
               default: ;
             endcase
           end
         end
       end
+    end
+  end
 
+  // =========================================================================
+  // BLOCK 2: DATAPATH ONLY (NO RESET)
+  // =========================================================================
+  // PIPELINED OUT_TAB REGISTERS
+  // Added compiler directives to completely disable Quartus Register Retiming on these nodes
+  (* preserve, dont_retime *) logic [31:0] safe_token_id [MAX_OUT];
+
+  always_ff @(posedge clk) begin 
+    if (sig_valid && sig_ready) begin
+      i_mem[i_wr[PTR_W-1:0]].symbol_id <= symbol_id;
+      i_mem[i_wr[PTR_W-1:0]].side      <= sig_side;
+      i_mem[i_wr[PTR_W-1:0]].price     <= sig_price;
+      i_mem[i_wr[PTR_W-1:0]].qty       <= sig_qty;
+    end
+    if (i_read_mem_reg) i_head_reg <= i_mem[i_rd[PTR_W-1:0]];
+
+    rpt_s0 <= rpt; rpt_s1 <= rpt_s0; rpt_s2 <= rpt_s1; rpt_p1 <= rpt_s2;
+
+    // ISOLATED COMPARATOR: Safe token ID is guaranteed stable. 
+    // We explicitly mask out the comparison during load_slot to break the 7.9ns pend_token routing loop!
+    token_match_s1[0]  <= out_valid[0]  && !load_slot_0  && (safe_token_id[0]  == rpt_s0.token_id);
+    token_match_s1[1]  <= out_valid[1]  && !load_slot_1  && (safe_token_id[1]  == rpt_s0.token_id);
+    token_match_s1[2]  <= out_valid[2]  && !load_slot_2  && (safe_token_id[2]  == rpt_s0.token_id);
+    token_match_s1[3]  <= out_valid[3]  && !load_slot_3  && (safe_token_id[3]  == rpt_s0.token_id);
+    token_match_s1[4]  <= out_valid[4]  && !load_slot_4  && (safe_token_id[4]  == rpt_s0.token_id);
+    token_match_s1[5]  <= out_valid[5]  && !load_slot_5  && (safe_token_id[5]  == rpt_s0.token_id);
+    token_match_s1[6]  <= out_valid[6]  && !load_slot_6  && (safe_token_id[6]  == rpt_s0.token_id);
+    token_match_s1[7]  <= out_valid[7]  && !load_slot_7  && (safe_token_id[7]  == rpt_s0.token_id);
+    token_match_s1[8]  <= out_valid[8]  && !load_slot_8  && (safe_token_id[8]  == rpt_s0.token_id);
+    token_match_s1[9]  <= out_valid[9]  && !load_slot_9  && (safe_token_id[9]  == rpt_s0.token_id);
+    token_match_s1[10] <= out_valid[10] && !load_slot_10 && (safe_token_id[10] == rpt_s0.token_id);
+    token_match_s1[11] <= out_valid[11] && !load_slot_11 && (safe_token_id[11] == rpt_s0.token_id);
+    token_match_s1[12] <= out_valid[12] && !load_slot_12 && (safe_token_id[12] == rpt_s0.token_id);
+    token_match_s1[13] <= out_valid[13] && !load_slot_13 && (safe_token_id[13] == rpt_s0.token_id);
+    token_match_s1[14] <= out_valid[14] && !load_slot_14 && (safe_token_id[14] == rpt_s0.token_id);
+    token_match_s1[15] <= out_valid[15] && !load_slot_15 && (safe_token_id[15] == rpt_s0.token_id);
+
+    // FLAT PARALLEL ONE-HOT MUX: Destroys the 16-level priority routing delay!
+    unique case (1'b1)
+      token_match_s1[0]:  begin match_data_s2 <= out_tab[0];  matched_qty_s2 <= out_tab[0].qty;  end 
+      token_match_s1[1]:  begin match_data_s2 <= out_tab[1];  matched_qty_s2 <= out_tab[1].qty;  end 
+      token_match_s1[2]:  begin match_data_s2 <= out_tab[2];  matched_qty_s2 <= out_tab[2].qty;  end 
+      token_match_s1[3]:  begin match_data_s2 <= out_tab[3];  matched_qty_s2 <= out_tab[3].qty;  end 
+      token_match_s1[4]:  begin match_data_s2 <= out_tab[4];  matched_qty_s2 <= out_tab[4].qty;  end 
+      token_match_s1[5]:  begin match_data_s2 <= out_tab[5];  matched_qty_s2 <= out_tab[5].qty;  end 
+      token_match_s1[6]:  begin match_data_s2 <= out_tab[6];  matched_qty_s2 <= out_tab[6].qty;  end 
+      token_match_s1[7]:  begin match_data_s2 <= out_tab[7];  matched_qty_s2 <= out_tab[7].qty;  end 
+      token_match_s1[8]:  begin match_data_s2 <= out_tab[8];  matched_qty_s2 <= out_tab[8].qty;  end 
+      token_match_s1[9]:  begin match_data_s2 <= out_tab[9];  matched_qty_s2 <= out_tab[9].qty;  end 
+      token_match_s1[10]: begin match_data_s2 <= out_tab[10]; matched_qty_s2 <= out_tab[10].qty; end 
+      token_match_s1[11]: begin match_data_s2 <= out_tab[11]; matched_qty_s2 <= out_tab[11].qty; end 
+      token_match_s1[12]: begin match_data_s2 <= out_tab[12]; matched_qty_s2 <= out_tab[12].qty; end 
+      token_match_s1[13]: begin match_data_s2 <= out_tab[13]; matched_qty_s2 <= out_tab[13].qty; end 
+      token_match_s1[14]: begin match_data_s2 <= out_tab[14]; matched_qty_s2 <= out_tab[14].qty; end 
+      token_match_s1[15]: begin match_data_s2 <= out_tab[15]; matched_qty_s2 <= out_tab[15].qty; end 
+      default:            begin match_data_s2 <= '0;          matched_qty_s2 <= 32'd0;           end
+    endcase
+
+    match_data_p1 <= match_data_s2;
+
+    if (rpt_valid_p1 && has_match_p1 && (rpt_p1.kind == RPT_EXEC)) begin
+      cr_reg.symbol_id      <= match_data_p1.symbol_id;
+      cr_reg.token_id       <= match_data_p1.token_id;
+      cr_reg.side           <= match_data_p1.side;
+      cr_reg.price          <= match_data_p1.price;
+      cr_reg.intended_total <= rpt_p1.filled_total;
+    end
+    if (do_enqueue_cancel_reg) c_mem[c_wr[CPTR_W-1:0]] <= cr_reg;
+    if (c_read_mem_reg) c_head_reg <= c_mem[c_rd[CPTR_W-1:0]];
+
+    pend_intent <= pend_intent_n;
+    if (tok_resp_valid) pend_token <= tok_resp_id;
+
+    if (int_ready) begin
+        enter_shadow_reg.symbol_id   <= pend_intent.symbol_id;
+        enter_shadow_reg.strat_id    <= strat_id;
+        enter_shadow_reg.action      <= ACT_ENTER;
+        enter_shadow_reg.side        <= pend_intent.side;
+        enter_shadow_reg.price_int   <= pend_intent.price;
+        enter_shadow_reg.qty         <= pend_intent.qty;
+        enter_shadow_reg.token_id    <= pend_token;
+
+        cancel_shadow_reg.symbol_id  <= c_head_reg.symbol_id;
+        cancel_shadow_reg.strat_id   <= strat_id;
+        cancel_shadow_reg.action     <= ACT_CANCEL;
+        cancel_shadow_reg.side       <= c_head_reg.side;
+        cancel_shadow_reg.price_int  <= c_head_reg.price;
+        cancel_shadow_reg.qty        <= c_head_reg.intended_total;
+        cancel_shadow_reg.token_id   <= c_head_reg.token_id;
+    end
+
+    if (ord_ready || !ord_valid) begin
+       if (skid_valid) ord <= skid_data;
+       else            ord <= shadow_is_cancel_reg ? cancel_shadow_reg : enter_shadow_reg;
+    end else if (shadow_valid_reg && !skid_valid) begin
+       skid_data <= shadow_is_cancel_reg ? cancel_shadow_reg : enter_shadow_reg;
+    end
+
+    if (load_slot_0)  begin out_tab[0].symbol_id  <= pend_intent.symbol_id; out_tab[0].token_id  <= pend_token; safe_token_id[0]  <= pend_token; out_tab[0].side  <= pend_intent.side; out_tab[0].price  <= pend_intent.price; out_tab[0].qty  <= pend_intent.qty; out_tab[0].filled_tot  <= 32'd0; out_tab[0].cancel_sent  <= 1'b0; end
+    if (load_slot_1)  begin out_tab[1].symbol_id  <= pend_intent.symbol_id; out_tab[1].token_id  <= pend_token; safe_token_id[1]  <= pend_token; out_tab[1].side  <= pend_intent.side; out_tab[1].price  <= pend_intent.price; out_tab[1].qty  <= pend_intent.qty; out_tab[1].filled_tot  <= 32'd0; out_tab[1].cancel_sent  <= 1'b0; end
+    if (load_slot_2)  begin out_tab[2].symbol_id  <= pend_intent.symbol_id; out_tab[2].token_id  <= pend_token; safe_token_id[2]  <= pend_token; out_tab[2].side  <= pend_intent.side; out_tab[2].price  <= pend_intent.price; out_tab[2].qty  <= pend_intent.qty; out_tab[2].filled_tot  <= 32'd0; out_tab[2].cancel_sent  <= 1'b0; end
+    if (load_slot_3)  begin out_tab[3].symbol_id  <= pend_intent.symbol_id; out_tab[3].token_id  <= pend_token; safe_token_id[3]  <= pend_token; out_tab[3].side  <= pend_intent.side; out_tab[3].price  <= pend_intent.price; out_tab[3].qty  <= pend_intent.qty; out_tab[3].filled_tot  <= 32'd0; out_tab[3].cancel_sent  <= 1'b0; end
+    if (load_slot_4)  begin out_tab[4].symbol_id  <= pend_intent.symbol_id; out_tab[4].token_id  <= pend_token; safe_token_id[4]  <= pend_token; out_tab[4].side  <= pend_intent.side; out_tab[4].price  <= pend_intent.price; out_tab[4].qty  <= pend_intent.qty; out_tab[4].filled_tot  <= 32'd0; out_tab[4].cancel_sent  <= 1'b0; end
+    if (load_slot_5)  begin out_tab[5].symbol_id  <= pend_intent.symbol_id; out_tab[5].token_id  <= pend_token; safe_token_id[5]  <= pend_token; out_tab[5].side  <= pend_intent.side; out_tab[5].price  <= pend_intent.price; out_tab[5].qty  <= pend_intent.qty; out_tab[5].filled_tot  <= 32'd0; out_tab[5].cancel_sent  <= 1'b0; end
+    if (load_slot_6)  begin out_tab[6].symbol_id  <= pend_intent.symbol_id; out_tab[6].token_id  <= pend_token; safe_token_id[6]  <= pend_token; out_tab[6].side  <= pend_intent.side; out_tab[6].price  <= pend_intent.price; out_tab[6].qty  <= pend_intent.qty; out_tab[6].filled_tot  <= 32'd0; out_tab[6].cancel_sent  <= 1'b0; end
+    if (load_slot_7)  begin out_tab[7].symbol_id  <= pend_intent.symbol_id; out_tab[7].token_id  <= pend_token; safe_token_id[7]  <= pend_token; out_tab[7].side  <= pend_intent.side; out_tab[7].price  <= pend_intent.price; out_tab[7].qty  <= pend_intent.qty; out_tab[7].filled_tot  <= 32'd0; out_tab[7].cancel_sent  <= 1'b0; end
+    if (load_slot_8)  begin out_tab[8].symbol_id  <= pend_intent.symbol_id; out_tab[8].token_id  <= pend_token; safe_token_id[8]  <= pend_token; out_tab[8].side  <= pend_intent.side; out_tab[8].price  <= pend_intent.price; out_tab[8].qty  <= pend_intent.qty; out_tab[8].filled_tot  <= 32'd0; out_tab[8].cancel_sent  <= 1'b0; end
+    if (load_slot_9)  begin out_tab[9].symbol_id  <= pend_intent.symbol_id; out_tab[9].token_id  <= pend_token; safe_token_id[9]  <= pend_token; out_tab[9].side  <= pend_intent.side; out_tab[9].price  <= pend_intent.price; out_tab[9].qty  <= pend_intent.qty; out_tab[9].filled_tot  <= 32'd0; out_tab[9].cancel_sent  <= 1'b0; end
+    if (load_slot_10) begin out_tab[10].symbol_id <= pend_intent.symbol_id; out_tab[10].token_id <= pend_token; safe_token_id[10] <= pend_token; out_tab[10].side <= pend_intent.side; out_tab[10].price <= pend_intent.price; out_tab[10].qty <= pend_intent.qty; out_tab[10].filled_tot <= 32'd0; out_tab[10].cancel_sent <= 1'b0; end
+    if (load_slot_11) begin out_tab[11].symbol_id <= pend_intent.symbol_id; out_tab[11].token_id <= pend_token; safe_token_id[11] <= pend_token; out_tab[11].side <= pend_intent.side; out_tab[11].price <= pend_intent.price; out_tab[11].qty <= pend_intent.qty; out_tab[11].filled_tot <= 32'd0; out_tab[11].cancel_sent <= 1'b0; end
+    if (load_slot_12) begin out_tab[12].symbol_id <= pend_intent.symbol_id; out_tab[12].token_id <= pend_token; safe_token_id[12] <= pend_token; out_tab[12].side <= pend_intent.side; out_tab[12].price <= pend_intent.price; out_tab[12].qty <= pend_intent.qty; out_tab[12].filled_tot <= 32'd0; out_tab[12].cancel_sent <= 1'b0; end
+    if (load_slot_13) begin out_tab[13].symbol_id <= pend_intent.symbol_id; out_tab[13].token_id <= pend_token; safe_token_id[13] <= pend_token; out_tab[13].side <= pend_intent.side; out_tab[13].price <= pend_intent.price; out_tab[13].qty <= pend_intent.qty; out_tab[13].filled_tot <= 32'd0; out_tab[13].cancel_sent <= 1'b0; end
+    if (load_slot_14) begin out_tab[14].symbol_id <= pend_intent.symbol_id; out_tab[14].token_id <= pend_token; safe_token_id[14] <= pend_token; out_tab[14].side <= pend_intent.side; out_tab[14].price <= pend_intent.price; out_tab[14].qty <= pend_intent.qty; out_tab[14].filled_tot <= 32'd0; out_tab[14].cancel_sent <= 1'b0; end
+    if (load_slot_15) begin out_tab[15].symbol_id <= pend_intent.symbol_id; out_tab[15].token_id <= pend_token; safe_token_id[15] <= pend_token; out_tab[15].side <= pend_intent.side; out_tab[15].price <= pend_intent.price; out_tab[15].qty <= pend_intent.qty; out_tab[15].filled_tot <= 32'd0; out_tab[15].cancel_sent <= 1'b0; end
+
+    if (rpt_valid_p1) begin
+      for (int i = 0; i < MAX_OUT; i++) begin
+        if (token_match_p1[i]) begin
+          out_tab[i].filled_tot <= rpt_p1.filled_total;
+          if (rpt_p1.kind == RPT_EXEC && !is_complete_fill_p1 && !out_tab[i].cancel_sent) begin
+             out_tab[i].cancel_sent <= 1'b1;
+          end
+        end
+      end
     end
   end
 
