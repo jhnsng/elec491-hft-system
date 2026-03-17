@@ -26,17 +26,17 @@ module ouch_outbound (
     input  logic [1:0]  st_empty,
 
     //=== OUTPUT: Algorithm Block Signals ===
-    output logic        algo_valid,
-    output logic [1:0]  algo_msg_type, 
+    output logic        algo_valid, // *
+    output logic [1:0]  algo_msg_type, // *
     output logic [63:0] algo_timestamp,
     output logic [31:0] algo_userref,
-    output logic [31:0] algo_qty,
-    output logic [63:0] algo_price,
+    output logic [31:0] algo_qty, // *
+    output logic [63:0] algo_price, // *
     output logic [63:0] algo_symbol,
-    output logic [7:0]  algo_side,
-    output logic [63:0] algo_order_ref,
-    output logic [63:0] algo_match_id,
-    output logic [7:0]  algo_reason
+    output logic [7:0]  algo_side, // 
+    output logic [63:0] algo_order_ref, // *
+    output logic [63:0] algo_match_id, //
+    output logic [7:0]  algo_reason // *
 );
 
     // 1) Constants
