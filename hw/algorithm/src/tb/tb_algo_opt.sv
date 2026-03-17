@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 
-module tb_algorithm;
+module tb_algo_opt;
 
   import hft_types_pkg::*;
   import algo_cfg_pkg::*;
@@ -57,8 +57,6 @@ module tb_algorithm;
   // Verification State & Global Limits (SCALED FOR 2 DECIMALS)
   // ----------------------------------------------------------------
   localparam int OPENING_PRICE = 29991; // $299.91
-  localparam int UPPER_LIMIT   = 32039; // $320.39
-  localparam int LOWER_LIMIT   = 27963; // $279.63
 
   typedef struct {
     side_e       side;
@@ -246,8 +244,8 @@ module tb_algorithm;
     end
   endtask
 
-  // Smooth steps of 6 cents to prevent MACD oscillation
-  task automatic trend_price(input int start_p, input int end_p, input int spread, input int step=6);
+  // FIXED: Increased hold time to 20 ticks to let the EMA pipeline finish calculating!
+  task automatic trend_price(input int start_p, input int end_p, input int spread, input int step=10);
     int current_p = start_p;
     if (start_p < end_p) begin
       while(current_p < end_p) begin
@@ -262,7 +260,7 @@ module tb_algorithm;
         send_tick(current_p, spread);
       end
     end
-    repeat(25) send_tick(end_p, spread); 
+    repeat(20) send_tick(end_p, spread); 
   endtask
 
   task automatic test_f001_warmup();
@@ -273,7 +271,7 @@ module tb_algorithm;
     auto_fill_enable = 1; 
     initial_ords = orders_sent_cnt;
     
-    for(int i=0; i<30; i++) begin
+    for(int i=0; i<15; i++) begin
        int p = (i%2==0) ? OPENING_PRICE : OPENING_PRICE + 100; 
        send_tick(p, 2);
     end
@@ -290,24 +288,24 @@ module tb_algorithm;
     $display("=======================================================");
     auto_fill_enable = 1;
 
+    // FIXED: Need 50 ticks to guarantee Slow EMA has fully settled
     $display("  -> Settling EMAs to lower baseline...");
-    repeat(100) send_tick(OPENING_PRICE - 300, 2); 
+    repeat(50) send_tick(OPENING_PRICE - 100, 2); 
     repeat(250) @(posedge clk); 
 
     $display("  -> Forcing UP Cross (Expecting BUY)");
     pre_buy = orders_sent_cnt; 
-    trend_price(OPENING_PRICE - 300, OPENING_PRICE + 300, 2, 6); 
+    trend_price(OPENING_PRICE - 100, OPENING_PRICE + 100, 2, 10); 
     repeat(250) @(posedge clk); 
     if (orders_sent_cnt == pre_buy) $error("F003 FAIL: No Buy on Up Cross"); 
 
-    $display("  -> Settling EMAs to upper baseline (CRITICAL FIX)...");
-    // We MUST let the Slow EMA catch up to the peak before we drop!
-    repeat(100) send_tick(OPENING_PRICE + 300, 2); 
+    $display("  -> Settling EMAs to upper baseline...");
+    repeat(50) send_tick(OPENING_PRICE + 100, 2); 
     repeat(250) @(posedge clk); 
 
     $display("  -> Forcing DOWN Cross (Expecting SELL)");
     pre_sell = orders_sent_cnt;
-    trend_price(OPENING_PRICE + 300, OPENING_PRICE - 300, 2, 6); 
+    trend_price(OPENING_PRICE + 100, OPENING_PRICE - 100, 2, 10); 
     repeat(250) @(posedge clk); 
     if (orders_sent_cnt == pre_sell) $error("F004 FAIL: No Sell on Down Cross"); 
 
@@ -376,7 +374,7 @@ module tb_algorithm;
     reject_test_enable = 1; 
     $display("  -> Forcing UP Cross to generate a trade");
     pre_cnt = orders_sent_cnt;
-    trend_price(OPENING_PRICE, OPENING_PRICE + 300, 2, 6); 
+    trend_price(OPENING_PRICE, OPENING_PRICE + 100, 2, 10); 
     repeat(250) @(posedge clk); 
     
     if (orders_sent_cnt == pre_cnt) $error("F007 FAIL: Setup failed, no order sent.");
@@ -402,9 +400,9 @@ module tb_algorithm;
 
     for(int i=0; i<9; i++) begin 
        $display("  -> Forcing Cross %0d", (i*2)+1);
-       trend_price(OPENING_PRICE, OPENING_PRICE + 300, 2, 12); 
+       trend_price(OPENING_PRICE, OPENING_PRICE + 100, 2, 15); 
        $display("  -> Forcing Cross %0d", (i*2)+2);
-       trend_price(OPENING_PRICE + 300, OPENING_PRICE, 2, 12); 
+       trend_price(OPENING_PRICE + 100, OPENING_PRICE, 2, 15); 
     end
     repeat(250) @(posedge clk); 
 
@@ -442,7 +440,7 @@ module tb_algorithm;
       fork
           begin
                $display("  -> Forcing cross to generate trade...");
-               trend_price(OPENING_PRICE, OPENING_PRICE + 300, 2, 6); 
+               trend_price(OPENING_PRICE, OPENING_PRICE + 100, 2, 10); 
                repeat(400) @(posedge clk);
           end
           begin

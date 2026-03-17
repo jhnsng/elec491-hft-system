@@ -161,11 +161,9 @@ module order_fsm (
   logic do_enqueue_cancel_reg;
   cancel_req_t cr_reg;
 
-  // --- SHADOW REGISTER PIPELINE ---
-  hft_types_pkg::order_intent_t enter_shadow_reg;
-  hft_types_pkg::order_intent_t cancel_shadow_reg;
-  logic shadow_valid_reg;
-  logic shadow_is_cancel_reg;
+  // --- SHADOW REGISTER PIPELINE (OPTIMIZED FOR 250MHz) ---
+  hft_types_pkg::order_intent_t shadow_reg;
+  (* maxfan = 16 *) logic shadow_valid_reg;
 
   logic int_ready;
   logic want_cancel, want_enter;
@@ -175,7 +173,7 @@ module order_fsm (
 
   // The Skid Buffer logic
   hft_types_pkg::order_intent_t skid_data;
-  logic skid_valid;
+  (* maxfan = 16 *) logic skid_valid;
 
   assign int_ready = !skid_valid;
 
@@ -248,7 +246,6 @@ module order_fsm (
       load_slot_8 <= 1'b0; load_slot_9 <= 1'b0; load_slot_10 <= 1'b0; load_slot_11 <= 1'b0;
       load_slot_12 <= 1'b0; load_slot_13 <= 1'b0; load_slot_14 <= 1'b0; load_slot_15 <= 1'b0;
       shadow_valid_reg <= 1'b0;
-      shadow_is_cancel_reg <= 1'b0;
     end else begin
       free_i <= free_i_next;
       has_free <= has_free_next;
@@ -302,8 +299,7 @@ module order_fsm (
       tok_resp_ready_reg <= (iss_n == ISS_WAITTOK) || (iss_n == ISS_REQTOK);
 
       if (int_ready) begin
-          shadow_valid_reg     <= (want_cancel || want_enter);
-          shadow_is_cancel_reg <= want_cancel;
+          shadow_valid_reg <= (want_cancel || want_enter);
       end else begin
           shadow_valid_reg <= 1'b0;
       end
@@ -442,28 +438,30 @@ module order_fsm (
     if (tok_resp_valid) pend_token <= tok_resp_id;
 
     if (int_ready) begin
-        enter_shadow_reg.symbol_id   <= pend_intent.symbol_id;
-        enter_shadow_reg.strat_id    <= strat_id;
-        enter_shadow_reg.action      <= ACT_ENTER;
-        enter_shadow_reg.side        <= pend_intent.side;
-        enter_shadow_reg.price_int   <= pend_intent.price;
-        enter_shadow_reg.qty         <= pend_intent.qty;
-        enter_shadow_reg.token_id    <= pend_token;
-
-        cancel_shadow_reg.symbol_id  <= c_head_reg.symbol_id;
-        cancel_shadow_reg.strat_id   <= strat_id;
-        cancel_shadow_reg.action     <= ACT_CANCEL;
-        cancel_shadow_reg.side       <= c_head_reg.side;
-        cancel_shadow_reg.price_int  <= c_head_reg.price;
-        cancel_shadow_reg.qty        <= c_head_reg.intended_total;
-        cancel_shadow_reg.token_id   <= c_head_reg.token_id;
+        if (want_cancel) begin
+            shadow_reg.symbol_id  <= c_head_reg.symbol_id;
+            shadow_reg.strat_id   <= strat_id;
+            shadow_reg.action     <= ACT_CANCEL;
+            shadow_reg.side       <= c_head_reg.side;
+            shadow_reg.price_int  <= c_head_reg.price;
+            shadow_reg.qty        <= c_head_reg.intended_total;
+            shadow_reg.token_id   <= c_head_reg.token_id;
+        end else begin
+            shadow_reg.symbol_id  <= pend_intent.symbol_id;
+            shadow_reg.strat_id   <= strat_id;
+            shadow_reg.action     <= ACT_ENTER;
+            shadow_reg.side       <= pend_intent.side;
+            shadow_reg.price_int  <= pend_intent.price;
+            shadow_reg.qty        <= pend_intent.qty;
+            shadow_reg.token_id   <= pend_token;
+        end
     end
 
     if (ord_ready || !ord_valid) begin
        if (skid_valid) ord <= skid_data;
-       else            ord <= shadow_is_cancel_reg ? cancel_shadow_reg : enter_shadow_reg;
+       else            ord <= shadow_reg;
     end else if (shadow_valid_reg && !skid_valid) begin
-       skid_data <= shadow_is_cancel_reg ? cancel_shadow_reg : enter_shadow_reg;
+       skid_data <= shadow_reg;
     end
 
     if (load_slot_0)  begin out_tab[0].symbol_id  <= pend_intent.symbol_id; out_tab[0].token_id  <= pend_token; safe_token_id[0]  <= pend_token; out_tab[0].side  <= pend_intent.side; out_tab[0].price  <= pend_intent.price; out_tab[0].qty  <= pend_intent.qty; out_tab[0].filled_tot  <= 32'd0; out_tab[0].cancel_sent  <= 1'b0; end
