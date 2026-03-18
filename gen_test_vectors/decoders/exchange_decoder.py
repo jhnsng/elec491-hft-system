@@ -14,6 +14,7 @@ D (Delete), E (Execute)
 from pathlib import Path
 from typing import Dict, Any, List
 import struct
+from decimal import Decimal, ROUND_HALF_UP
 
 from base_decoder import BaseDecoder
 
@@ -25,13 +26,30 @@ class ExchangeDecoder(BaseDecoder):
         super().__init__(config, output_dir)
         self._match_counter = 0
 
+    def _encode_price_4(self, price: Any) -> int:
+        """Convert human-readable price to ITCH Price(4) fixed-point integer."""
+        price_dec = Decimal(str(price)).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
+        return int(price_dec * Decimal('10000'))
+
+    def _get_attribution(self, row: Dict[str, Any]) -> str:
+        """Resolve F-message attribution from sheet data; default to a placeholder."""
+        attribution_raw = row.get('Attribution')
+        if attribution_raw is None:
+            return 'NSDQ'
+
+        attribution = str(attribution_raw).strip()
+        if not attribution or attribution.lower() == 'nan':
+            return 'NSDQ'
+
+        return attribution[:4].ljust(4)
+
     # ------------------------------------------------------------------
     # ITCH message body encoders (1-byte type + payload, NO length prefix)
     # ------------------------------------------------------------------
 
     def encode_add_order(self, row: Dict[str, Any]) -> bytes:
         """
-        Encode Add Order message body (Type 'A' or 'F').
+        Encode Add Order message body (Type 'A').
         Total: 36 bytes
           Message Type      (1 byte)
           Stock Locate      (2 bytes BE)
@@ -41,24 +59,54 @@ class ExchangeDecoder(BaseDecoder):
           Buy/Sell          (1 byte)  'B' or 'S'
           Shares            (4 bytes BE)
           Stock             (8 bytes ASCII, space-padded)
-          Price             (4 bytes BE, price * 100)
+          Price             (4 bytes BE, Price(4): price * 10000)
         """
         return struct.pack(
             '>B H H 6s Q B I 8s I',
-            ord(row['Message Type']),       # 1 byte
-            0,                              # Stock Locate
-            0,                              # Tracking Number
+            ord(row['Message Type']),
+            0,
+            0,
             int(row['Timestamp']).to_bytes(6, 'big'),
             int(row['Order ID']),
             ord(row['Side']),
             int(row['Shares']),
             row['Stock'].ljust(8)[:8].encode('ascii'),
-            int(float(row['Price']) * 100), # price * 100 (2 implied decimals)
+            self._encode_price_4(row['Price']),
+        )
+
+    def encode_add_order_mpid(self, row: Dict[str, Any]) -> bytes:
+        """
+        Encode Add Order with MPID Attribution message body (Type 'F').
+        Total: 40 bytes
+          Message Type      (1 byte)
+          Stock Locate      (2 bytes BE)
+          Tracking Number   (2 bytes BE)
+          Timestamp         (6 bytes BE)
+          Order Ref Number  (8 bytes BE)
+          Buy/Sell          (1 byte)  'B' or 'S'
+          Shares            (4 bytes BE)
+          Stock             (8 bytes ASCII, space-padded)
+          Price             (4 bytes BE, Price(4): price * 10000)
+          Attribution       (4 bytes ASCII, space-padded)
+        """
+        attribution = self._get_attribution(row)
+        return struct.pack(
+            '>B H H 6s Q B I 8s I 4s',
+            ord(row['Message Type']),
+            0,
+            0,
+            int(row['Timestamp']).to_bytes(6, 'big'),
+            int(row['Order ID']),
+            ord(row['Side']),
+            int(row['Shares']),
+            row['Stock'].ljust(8)[:8].encode('ascii'),
+            self._encode_price_4(row['Price']),
+            attribution.encode('ascii'),
         )
 
     def encode_cancel_order(self, row: Dict[str, Any]) -> bytes:
         """
-        Encode Cancel/Delete Order message body (Type 'X' or 'D').
+        Encode Cancel Order message body (Type 'X').
         Total: 23 bytes
           Message Type      (1 byte)
           Stock Locate      (2 bytes BE)
@@ -75,6 +123,25 @@ class ExchangeDecoder(BaseDecoder):
             int(row['Timestamp']).to_bytes(6, 'big'),
             int(row['Order ID']),
             int(row['Shares']),
+        )
+
+    def encode_delete_order(self, row: Dict[str, Any]) -> bytes:
+        """
+        Encode Delete Order message body (Type 'D').
+        Total: 19 bytes
+          Message Type      (1 byte)
+          Stock Locate      (2 bytes BE)
+          Tracking Number   (2 bytes BE)
+          Timestamp         (6 bytes BE)
+          Order Ref Number  (8 bytes BE)
+        """
+        return struct.pack(
+            '>B H H 6s Q',
+            ord(row['Message Type']),
+            0,
+            0,
+            int(row['Timestamp']).to_bytes(6, 'big'),
+            int(row['Order ID']),
         )
 
     def encode_execute_order(self, row: Dict[str, Any]) -> bytes:
@@ -141,7 +208,7 @@ class ExchangeDecoder(BaseDecoder):
             msg_type = row.get('Message Type', '').upper()
             row_num = row['row_number']
 
-            if msg_type in ('A', 'F'):
+            if msg_type == 'A':
                 body = self.encode_add_order(row)
                 desc = (
                     f"Row {row_num}: Add Order "
@@ -149,11 +216,25 @@ class ExchangeDecoder(BaseDecoder):
                     f"Qty {row.get('Shares')}, {row.get('Stock', 'N/A')}, "
                     f"Price {row.get('Price', 0.0)}"
                 )
-            elif msg_type in ('X', 'D'):
+            elif msg_type == 'F':
+                body = self.encode_add_order_mpid(row)
+                desc = (
+                    f"Row {row_num}: Add Order MPID "
+                    f"ID {row.get('Order ID')}, Side {row.get('Side', 'N/A')}, "
+                    f"Qty {row.get('Shares')}, {row.get('Stock', 'N/A')}, "
+                    f"Price {row.get('Price', 0.0)}, MPID {self._get_attribution(row)}"
+                )
+            elif msg_type == 'X':
                 body = self.encode_cancel_order(row)
                 desc = (
                     f"Row {row_num}: Cancel Order "
                     f"ID {row.get('Order ID')}, Qty {row.get('Shares')}"
+                )
+            elif msg_type == 'D':
+                body = self.encode_delete_order(row)
+                desc = (
+                    f"Row {row_num}: Delete Order "
+                    f"ID {row.get('Order ID')}"
                 )
             elif msg_type == 'E':
                 body = self.encode_execute_order(row)
