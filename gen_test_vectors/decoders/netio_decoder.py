@@ -94,6 +94,34 @@ class NetioDecoder(BaseDecoder):
         )
         
         return packet
+
+    def encode_delete_order(self, row: Dict[str, Any]) -> bytes:
+        """
+        Encode Delete Order message (Type 'D') per ITCH 5.0.
+        Format: 19 bytes total
+        - Message Type (1 byte)
+        - Stock Locate (2 bytes, big endian)
+        - Tracking Number (2 bytes, big endian)
+        - Timestamp (6 bytes, big endian)
+        - Order Reference Number (8 bytes, big endian)
+        """
+        msg_type = ord(row['Message Type'])
+        stock_locate = 0
+        tracking_num = 0
+
+        timestamp = int(row['Timestamp'])
+        order_id = int(row['Order ID'])
+
+        packet = struct.pack(
+            '>B H H 6s Q',
+            msg_type,                    # 1 byte: Message Type
+            stock_locate,                # 2 bytes: Stock Locate
+            tracking_num,                # 2 bytes: Tracking Number
+            timestamp.to_bytes(6, 'big'),# 6 bytes: Timestamp
+            order_id                     # 8 bytes: Order Reference Number
+        )
+
+        return packet
     
     def encode_execute_order(self, row: Dict[str, Any]) -> bytes:
         """
@@ -160,9 +188,12 @@ class NetioDecoder(BaseDecoder):
             if msg_type in ('A', 'F'):
                 packet = self.encode_add_order(row)
                 desc = f"Row {row_num}: Add Order ID {order_id}, Side {side}, Qty {shares}, {stock}, Price {price}"
-            elif msg_type in ('X', 'D'):
+            elif msg_type == 'X':
                 packet = self.encode_cancel_order(row)
                 desc = f"Row {row_num}: Cancel Order ID {order_id}, Qty {shares}"
+            elif msg_type == 'D':
+                packet = self.encode_delete_order(row)
+                desc = f"Row {row_num}: Delete Order ID {order_id}"
             elif msg_type == 'E':
                 packet = self.encode_execute_order(row)
                 desc = f"Row {row_num}: Execute Order ID {order_id}, Qty {shares}"
