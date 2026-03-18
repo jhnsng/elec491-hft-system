@@ -89,25 +89,15 @@ ob_update order_cancel_execute(uint64_t id, uint32_t qty)
 }
 
 ob_update order_delete(uint64_t id) {
-<<<<<<< Updated upstream
-    // Convert from network byte order (big-endian) to host byte order
-=======
     // Convert from network byte order (little-endian) to host byte order
->>>>>>> Stashed changes
     id = be64toh_manual(id);
     
     order_entry_t *e = &order_map[id];
     
     // Return NEGATIVE quantity for delete using two's complement: ~qty + 1
-<<<<<<< Updated upstream
-    uint32_t negated_qty = ~e->qty + 1;
-    
-    // Convert back to big-endian for transmission
-=======
     uint32_t negated_qty = ~ntohl_manual(e->qty) + 1;
     
     // Convert back to little-endian for transmission
->>>>>>> Stashed changes
     negated_qty = htonl_manual(negated_qty);
     
     // Pack into 64 bits: [side(1bit)][price>>2(31bits)][negated_qty(32bits)]
