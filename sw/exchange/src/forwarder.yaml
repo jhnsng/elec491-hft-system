@@ -1,0 +1,23 @@
+itch_file: /home/qazed/capstone/07302019.NASDAQ_ITCH50
+
+udp:
+  host: 127.0.0.1
+  port: 9000
+  session: ITCH_DATA
+  max_packet_size: 1460
+
+reader:
+  chunk_size: 4194304  # 4 MiB
+  max_buffer_mb: 512
+  stats_interval: 5.0
+  benchmark_timeout_s: 60.0
+  # preload_bytes: 1073741824    # 1 GiB
+
+tickers:
+  - SPY
+#  - MSFT
+
+ouch:
+  host: 127.0.0.1
+  port: 9100
+  enabled: false         # opt-in; override with --ouch CLI flag
