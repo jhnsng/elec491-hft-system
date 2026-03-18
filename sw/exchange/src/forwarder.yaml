@@ -1,8 +1,8 @@
-itch_file: /home/qazed/capstone/07302019.NASDAQ_ITCH50
+itch_file: ..\..\..\gen_test_vectors\outputs\exchange_vectors.bin
 
 udp:
-  host: 127.0.0.1
-  port: 9000
+  host: 192.168.1.123
+  port: 12345
   session: ITCH_DATA
   max_packet_size: 1460
 
@@ -14,7 +14,7 @@ reader:
   # preload_bytes: 1073741824    # 1 GiB
 
 tickers:
-  - SPY
+  - AAPL
 #  - MSFT
 
 ouch:
