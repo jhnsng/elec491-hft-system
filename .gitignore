@@ -77,6 +77,11 @@ sw/**/*.o
 sw/**/*.elf
 sw/**/*.map
 
+# Python cache
+__pycache__/
+
+# Test Vector script outputs
+gen_test_vectors/outputs/
 ########################################
 # Allowlist (explicitly keep)
 ########################################

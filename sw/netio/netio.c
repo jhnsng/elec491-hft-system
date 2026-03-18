@@ -31,9 +31,11 @@ struct itch_msg_def {
 };
 
 static const struct itch_msg_def itch_table[] = {
+    { 'F', 40 },
     { 'A', 36 },
     { 'E', 31 },
     { 'X', 23 },
+    { 'D', 19 },
 };
 
 static int get_itch_msg_length(uint8_t type)
@@ -86,6 +88,7 @@ extern ob_update order_add(uint64_t id,
 
 extern ob_update order_cancel_execute(uint64_t id,
                                       uint32_t qty);
+extern ob_update order_delete(uint64_t id);
 
 /* ============================================================
  * UDP helpers
@@ -282,8 +285,8 @@ int main(void)
             ob_update upd;
 
             switch (type) {
-                case 'A':
-                case 'F': {
+                case 'A': // Add Order – No MPID Attribution
+                case 'F': { // Add Order with MPID Attribution
                     memcpy(&order_id, &msg[11], 8);
                     memcpy(&quantity, &msg[20], 4);
                     memcpy(&price, &msg[32], 4);
@@ -291,41 +294,42 @@ int main(void)
 
                     clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
 
-                    //printf("order_add: id=0x%016" PRIx64 ", price=0x%" PRIx32
-                   //        ", qty=0x%" PRIx32 ", side=%c\n",
-                    //       order_id, price, quantity, side);
-
+                    printf("order_add: id=0x%016" PRIx64 ", price=0x%" PRIx32
+                           ", qty=0x%" PRIx32 ", side=%c\n",
+                           order_id, price, quantity, side);
                     upd = order_add(order_id, price, quantity, side);
                     break;
                     }
-                case 'E': // TODO: comment out endianness conversions (may need to add them back during integration)
+                case 'E': // Order Executed
                     memcpy(&order_id, &msg[11], 8);
                     memcpy(&quantity, &msg[19], 4);
 
                     clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
 
                     upd = order_cancel_execute(order_id, quantity);
-                    //printf("order_execute: id=0x%016" PRIx64 ", qty=0x%" PRIx32 "\n",
-                    //       order_id, quantity);
+                    printf("order_execute: id=0x%016" PRIx64 ", qty=0x%" PRIx32 "\n",
+                           order_id, quantity);
                     break;
 
-                case 'X':
+                case 'X': // Order Cancel
                     memcpy(&order_id, &msg[11], 8);
                     memcpy(&quantity, &msg[19], 4);
                     
                     clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
 
                     upd = order_cancel_execute(order_id, quantity);
-                    //printf("order_cancel: id=0x%016" PRIx64 ", qty=0x%" PRIx32 "\n",
-                    //       order_id, quantity);
+                    printf("order_cancel: id=0x%016" PRIx64 ", qty=0x%" PRIx32 "\n",
+                          order_id, quantity);
                     break;
 
-                case 'D': // TODO: change to new ordermap logic
-                    memcpy(&order_id, &msg[9], 8);
+                case 'D': // Order Delete
+                    memcpy(&order_id, &msg[11], 8);
 
                     clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
 
-                    upd = order_cancel_execute(order_id, 0);
+                    upd = order_delete(order_id);
+                    printf("order_delete: id=0x%016" PRIx64 "\n",
+                          order_id);
                     break;
 
                 default:
@@ -337,7 +341,7 @@ int main(void)
 
             clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_ordermap);
 
-            //printf("ordermap output=0x%016" PRIx64 "\n", upd);
+            printf("ordermap output=0x%016" PRIx64 "\n", upd);
 
             while (WRITE_FIFO_FILL_LEVEL >= (8192 - 64)) {
                 printf("FIFO full, waiting...\n");

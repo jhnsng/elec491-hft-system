@@ -1,19 +1,22 @@
 import socket
 import sys
-import time
 import struct
+import os
 
 DE1_IP   = "192.168.1.123"
 DE1_PORT = 12345
 
-# Packet 0: Order ID 1, Side B, Qty 100 (0x64), AAPL, Price ~20.00
-PAYLOAD_0 = bytes.fromhex("58 00 01 00 03 00 00 00 00 00 01 00 00 00 00 00 00 00 02 00 00 00 C8")
+# Add the outputs directory to the Python path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+vectors_dir = os.path.join(current_dir, "..", "..", "gen_test_vectors", "outputs")
+sys.path.append(os.path.abspath(vectors_dir))
 
-# Packet 1: Order ID 2, Side B, Qty 200 (0xC8), AAPL, Price 30.20
-PAYLOAD_1 = bytes.fromhex("41 00 01 00 02 00 00 00 00 00 00 00 00 00 00 00 00 00 02 42 00 00 00 C8 41 41 50 4C 20 20 20 20 00 00 6D C4")
-
-# Packet 2: Add Order ID 1, Side B, Qty 100 (0x64), AAPL, Price ~20.00
-PAYLOAD_2 = bytes.fromhex("41 00 01 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 01 42 00 00 00 64 41 41 50 4C 20 20 20 20 00 00 6D 60")
+# Import the auto-generated test vectors
+try:
+    import netio_vectors
+except ImportError:
+    print("Error: Could not import netio_vectors.py. Check your directory structure.")
+    sys.exit(1)
 
 
 def build_moludp64_header(msg_count: int, seq_num: int) -> bytes:
@@ -36,20 +39,16 @@ def main():
         sys.exit(1)
 
     choice = sys.argv[1]
-    if choice == "0":
-        payload = PAYLOAD_0
-        print("Selecting Packet 0...")
-    elif choice == "1":
-        payload = PAYLOAD_1
-        print("Selecting Packet 1...")
-    elif choice == "2":
-        payload = PAYLOAD_2
-        print("Selecting Packet 2...")
-    else:
-        print("Invalid argument. Use 0, 1, or 2.")
-        sys.exit(1)
-
+    payload_name = f"PAYLOAD_{choice}"
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    # Dynamically fetch the payload from the imported module
+    if hasattr(netio_vectors, payload_name):
+        payload = getattr(netio_vectors, payload_name)
+        print(f"Selecting {payload_name} from netio_vectors.py...")
+    else:
+        print(f"Invalid argument. '{payload_name}' not found in netio_vectors.py.")
+        sys.exit(1)
 
     # Sequence number for each packet
     seq_num = 1
