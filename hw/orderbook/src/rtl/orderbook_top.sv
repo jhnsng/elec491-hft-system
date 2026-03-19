@@ -71,6 +71,44 @@ module orderbook_top (
         .best_valid      (best_valid)
     );
 
+    algorithm u_algorithm (
+        .clk             (CLOCK_50),
+        .rst_n           (rst_n_sync),
+
+        .l1_valid       (best_valid),
+        .l1_ready       (),
+        .l1_symbol_id   (16'd0),
+        .l1_ts_ns       (32'd0),
+        .bb_p           (best_bid_price),
+        .bb_q           (best_bid_qty),
+        .ba_p           (best_ask_price),
+        .ba_q           (best_ask_qty),
+
+        .tok_req_valid  (),
+        .tok_req_ready  (),
+        .tok_req_symbol_id (),
+
+        .tok_resp_valid (),
+        .tok_resp_ready (),
+        .tok_resp_symbol_id (),
+
+        .ord_valid (),
+        .ord_ready (),
+        .ord_symbol_id (),
+        .ord_action (),
+        .ord_side (),
+        .ord_price_int (),
+        .ord_qty (),
+        .ord_token_id (),
+        
+        .rpt_valid (),
+        .rpt_ready (),
+        .rpt_symbol_id (),
+        .rpt_token_id (),
+        .rpt_kind (),
+        .rpt_filled_total ()
+    );
+
     /* ================================
         Orderbook Display (50MHz domain)
         ================================ */
