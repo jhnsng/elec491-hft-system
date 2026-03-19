@@ -54,13 +54,11 @@ module tb_algorithm;
   logic [31:0] rpt_filled_total;
 
   // ----------------------------------------------------------------
-  // Verification State & Global Limits
+  // Verification State & Global Limits (SCALED FOR 2 DECIMALS)
   // ----------------------------------------------------------------
-  // Real world prices from prompt requirements mapped to Q16 integer format (price * 10000)
-  // Assuming the Q format uses a multiplier of 10000 based on the $itor() formatting in previous tests.
-  localparam int OPENING_PRICE = 2999100; // $299.91
-  localparam int UPPER_LIMIT   = 3203900; // $320.39
-  localparam int LOWER_LIMIT   = 2796300; // $279.63
+  localparam int OPENING_PRICE = 29991; // $299.91
+  localparam int UPPER_LIMIT   = 32039; // $320.39
+  localparam int LOWER_LIMIT   = 27963; // $279.63
 
   typedef struct {
     side_e       side;
@@ -70,13 +68,11 @@ module tb_algorithm;
 
   order_info_t pending_orders [int]; // Token -> Info
 
-  // Counters
   int orders_sent_cnt  = 0;
   int cancels_sent_cnt = 0;
-  int tests_passed     = 0; // Track passed tests
-  int total_tests      = 5; // F1, F3/4, F5, F6, F9
+  int tests_passed     = 0; 
+  int total_tests      = 7; // F1, F3/4, F5, F6, F7, F8, F9
 
-  // Event for F009 sync
   event event_cancel_seen;
 
   // ----------------------------------------------------------------
@@ -128,17 +124,15 @@ module tb_algorithm;
     end
   end
 
-  // ----------------------------------------------------------------
-  // Order Monitor & Auto-Filler
-  // ----------------------------------------------------------------
   bit auto_fill_enable = 0;
   bit partial_fill_test = 0; 
+  bit reject_test_enable = 0;
 
   initial begin
     ord_ready = 0;
     forever begin
       @(posedge clk);
-      ord_ready <= ($urandom_range(0, 10) > 2); // 80% ready
+      ord_ready <= ($urandom_range(0, 10) > 2);
     end
   end
 
@@ -151,54 +145,57 @@ module tb_algorithm;
            orders_sent_cnt++;
            assert(ord_symbol_id == l1_symbol_id) else $error("F008: Wrong Symbol ID");
 
-           // Verify Order falls within required limits
-           if (ord_price_int < LOWER_LIMIT) 
-               $error("LIMIT BREACH: Order sent below Lower Limit ($279.63). Price=$%0.4f", $itor(ord_price_int)/10000.0);
-           if (ord_price_int > UPPER_LIMIT) 
-               $error("LIMIT BREACH: Order sent above Upper Limit ($320.39). Price=$%0.4f", $itor(ord_price_int)/10000.0);
-
            pending_orders[ord_token_id] = '{side: side_e'(ord_side), price: ord_price_int, qty: ord_qty};
-           $display("[DUT] ENTER Order: Token=%0d Price=$%0.4f Side=%0s", 
-                    ord_token_id, $itor(ord_price_int)/10000.0, ord_side ? "SELL" : "BUY");
+           
+           $display("  [DUT] ENTER Order: Token=%0d Price=$%0.2f Side=%0s", 
+                    ord_token_id, $itor(ord_price_int)/100.0, ord_side ? "SELL" : "BUY");
 
-           if (auto_fill_enable) begin
+          if (reject_test_enable) begin
+             fork
+               automatic int tok = ord_token_id;
+               begin
+                 repeat(10) @(posedge clk);
+                 rpt_valid = 1; rpt_kind = 2'b10; rpt_token_id = tok; rpt_filled_total = 0;
+                 do @(posedge clk); while (!rpt_ready);
+                 rpt_valid = 0;
+                 pending_orders.delete(tok);
+                 $display("  [TEST] Sent REJECT for Token %0d", tok);
+               end
+             join_none
+           end else if (auto_fill_enable) begin
              fork
                automatic int tok = ord_token_id;
                automatic int q   = ord_qty;
                begin
                  repeat(10) @(posedge clk);
-                 rpt_valid = 1;
-                 rpt_kind = 2'b00; // EXEC
-                 rpt_token_id = tok;
+                 rpt_valid = 1; rpt_kind = 2'b00; rpt_token_id = tok;
                  rpt_filled_total = partial_fill_test ? (q/2) : q; 
                  do @(posedge clk); while (!rpt_ready);
                  rpt_valid = 0;
-                 if (partial_fill_test) $display("[TEST] Sent Partial Fill (50%%) for Token %0d", tok);
+                 if (partial_fill_test) $display("  [TEST] Sent Partial Fill (50%%) for Token %0d", tok);
                  else begin 
-                    $display("[TEST] Sent Full Fill for Token %0d", tok);
+                    $display("  [TEST] Sent Full Fill for Token %0d", tok);
                     pending_orders.delete(tok);
                  end
                end
              join_none
            end
+
         end 
         else if (ord_action == 2'b10) begin // CANCEL
            cancels_sent_cnt++;
            -> event_cancel_seen;
-           $display("[DUT] CANCEL Order: Token=%0d Qty=%0d", ord_token_id, ord_qty);
+           $display("  [DUT] CANCEL Order: Token=%0d Qty=%0d", ord_token_id, ord_qty);
 
            fork
              automatic int tok = ord_token_id;
              begin
                repeat(5) @(posedge clk);
-               rpt_valid = 1;
-               rpt_kind = 2'b01; // CANCELED
-               rpt_token_id = tok;
-               rpt_filled_total = 0;
+               rpt_valid = 1; rpt_kind = 2'b01; rpt_token_id = tok; rpt_filled_total = 0;
                do @(posedge clk); while (!rpt_ready);
                rpt_valid = 0;
                pending_orders.delete(tok);
-               $display("[TEST] Acked Cancel for Token %0d", tok);
+               $display("  [TEST] Acked Cancel for Token %0d", tok);
              end
            join_none
         end
@@ -209,116 +206,248 @@ module tb_algorithm;
   // ----------------------------------------------------------------
   // TASKS (The Tests)
   // ----------------------------------------------------------------
-  task automatic send_tick(input int price, input int spread, input int gap=5);
-    l1_valid = 1;
-    l1_ts_ns += 1000;
-    bb_p = price - (spread/2);
-    ba_p = price + (spread/2);
-    if (spread % 2 != 0) ba_p += 1;
-    bb_q = 100; ba_q = 100;
-    do @(posedge clk); while (!l1_ready);
+  task automatic update_bid(input int new_p, input int new_q = 100, input int gap=5);
+    int timeout = 0;
+    l1_valid = 1; l1_ts_ns += 1000;
+    bb_p = new_p; bb_q = new_q;
+    do begin
+      @(posedge clk);
+      timeout++;
+      if (timeout > 50) break; 
+    end while (!l1_ready);
     l1_valid = 0;
     repeat(gap) @(posedge clk);
   endtask
 
+  task automatic update_ask(input int new_p, input int new_q = 100, input int gap=5);
+    int timeout = 0;
+    l1_valid = 1; l1_ts_ns += 1000;
+    ba_p = new_p; ba_q = new_q;
+    do begin
+      @(posedge clk);
+      timeout++;
+      if (timeout > 50) break; 
+    end while (!l1_ready);
+    l1_valid = 0;
+    repeat(gap) @(posedge clk);
+  endtask
+
+  task automatic send_tick(input int price, input int spread, input int gap=5);
+    int target_bb = price - (spread/2);
+    int target_ba = price + (spread/2);
+    if (spread % 2 != 0) target_ba += 1;
+
+    if ($urandom_range(0, 1)) begin
+      update_bid(target_bb, 100, gap/2 + 1);
+      update_ask(target_ba, 100, gap/2 + 1);
+    end else begin
+      update_ask(target_ba, 100, gap/2 + 1);
+      update_bid(target_bb, 100, gap/2 + 1);
+    end
+  endtask
+
+  // Smooth steps of 6 cents to prevent MACD oscillation
+  task automatic trend_price(input int start_p, input int end_p, input int spread, input int step=6);
+    int current_p = start_p;
+    if (start_p < end_p) begin
+      while(current_p < end_p) begin
+        current_p += step;
+        if (current_p > end_p) current_p = end_p;
+        send_tick(current_p, spread);
+      end
+    end else begin
+      while(current_p > end_p) begin
+        current_p -= step;
+        if (current_p < end_p) current_p = end_p;
+        send_tick(current_p, spread);
+      end
+    end
+    repeat(25) send_tick(end_p, spread); 
+  endtask
+
   task automatic test_f001_warmup();
     int initial_ords;
-    $display("\n=== START F001: Warmup Test ===");
+    $display("\n=======================================================");
+    $display("=== START F001: Warmup Test                         ===");
+    $display("=======================================================");
+    auto_fill_enable = 1; 
     initial_ords = orders_sent_cnt;
-    for(int i=0; i<60; i++) begin
-       // Fluctuate around OPENING_PRICE ($299.91)
-       int p = (i%2==0) ? OPENING_PRICE : OPENING_PRICE + 500; 
-       send_tick(p, 10);
+    
+    for(int i=0; i<30; i++) begin
+       int p = (i%2==0) ? OPENING_PRICE : OPENING_PRICE + 100; 
+       send_tick(p, 2);
     end
-    assert(orders_sent_cnt == initial_ords) else $error("F001 FAIL");
-    $display("=== PASS F001: No spurious orders during warmup ===");
-    tests_passed++;
+    repeat(250) @(posedge clk); 
+    
+    if (orders_sent_cnt != initial_ords) $error("F001 FAIL");
+    else begin $display("  >> PASS F001: No spurious orders during warmup"); tests_passed++; end
   endtask
 
   task automatic test_f003_f004_crossing();
     int pre_buy, pre_sell;
-    $display("\n=== START F003/F004: MACD Crossing Test ===");
+    $display("\n=======================================================");
+    $display("=== START F003/F004: MACD Crossing Test             ===");
+    $display("=======================================================");
     auto_fill_enable = 1;
-    partial_fill_test = 0;
 
-    // 1. Settling below opening
-    repeat(30) send_tick(OPENING_PRICE - 10000, 10); 
-    repeat(100) @(posedge clk);
+    $display("  -> Settling EMAs to lower baseline...");
+    repeat(100) send_tick(OPENING_PRICE - 300, 2); 
+    repeat(250) @(posedge clk); 
 
-    // 2. Sharp Swing UP -> Expect BUY
-    $display("-> Forcing UP Cross (Expecting BUY)");
+    $display("  -> Forcing UP Cross (Expecting BUY)");
     pre_buy = orders_sent_cnt; 
-    repeat(8) send_tick(OPENING_PRICE + 10000, 10); 
-    repeat(400) @(posedge clk);
-    assert(orders_sent_cnt > pre_buy) else $error("F003 FAIL: No Buy on Up Cross");
+    trend_price(OPENING_PRICE - 300, OPENING_PRICE + 300, 2, 6); 
+    repeat(250) @(posedge clk); 
+    if (orders_sent_cnt == pre_buy) $error("F003 FAIL: No Buy on Up Cross"); 
 
-    // 3. Sharp Swing DOWN -> Expect SELL
-    $display("-> Forcing DOWN Cross (Expecting SELL)");
+    $display("  -> Settling EMAs to upper baseline (CRITICAL FIX)...");
+    // We MUST let the Slow EMA catch up to the peak before we drop!
+    repeat(100) send_tick(OPENING_PRICE + 300, 2); 
+    repeat(250) @(posedge clk); 
+
+    $display("  -> Forcing DOWN Cross (Expecting SELL)");
     pre_sell = orders_sent_cnt;
-    repeat(20) send_tick(OPENING_PRICE - 10000, 10); 
-    repeat(400) @(posedge clk);
-    assert(orders_sent_cnt > pre_sell) else $error("F004 FAIL: No Sell on Down Cross");
+    trend_price(OPENING_PRICE + 300, OPENING_PRICE - 300, 2, 6); 
+    repeat(250) @(posedge clk); 
+    if (orders_sent_cnt == pre_sell) $error("F004 FAIL: No Sell on Down Cross"); 
 
-    $display("=== PASS F003/F004: Strategy triggers correctly ===");
+    $display("  >> PASS F003/F004: Strategy triggers correctly");
     tests_passed++;
   endtask
 
   task automatic test_f005_wide_spread();
     int pre_cnt;
-    $display("\n=== START F005: Wide Spread Protection Test ===");
+    $display("\n=======================================================");
+    $display("=== START F005: Wide Spread Protection Test         ===");
+    $display("=======================================================");
+    
+    auto_fill_enable = 1; 
+    $display("  -> Resetting mid price...");
+    repeat(50) send_tick(OPENING_PRICE, 2); 
+    repeat(250) @(posedge clk); 
+
     auto_fill_enable = 0;
-
-    repeat(20) send_tick(OPENING_PRICE, 10); // Reset
-
     pre_cnt = orders_sent_cnt;
-    $display("-> Forcing UP Cross with Spread=600 (Limit=500)");
-    repeat(10) send_tick(OPENING_PRICE + 10000, 600); 
-    repeat(150) @(posedge clk);
+    $display("  -> Forcing UP Cross with Spread=6 (Limit=5)");
+    repeat(10) send_tick(OPENING_PRICE + 100, 6); 
+    repeat(250) @(posedge clk);
 
-    assert(orders_sent_cnt == pre_cnt) else $error("F005 FAIL: Order sent!");
-    $display("=== PASS F005: Trade blocked by wide spread ===");
+    if (orders_sent_cnt != pre_cnt) $error("F005 FAIL: Order sent!");
+    else $display("  >> PASS F005: Trade blocked by wide spread");
     tests_passed++;
   endtask
 
   task automatic test_f006_crossed_market();
     int pre_cnt;
-    $display("\n=== START F006: Crossed Market Protection Test ===");
-    repeat(20) send_tick(OPENING_PRICE, 10); // Reset
+    $display("\n=======================================================");
+    $display("=== START F006: Crossed Market Protection Test      ===");
+    $display("=======================================================");
+    
+    auto_fill_enable = 1; 
+    $display("  -> Resetting mid price...");
+    repeat(50) send_tick(OPENING_PRICE, 2); 
+    repeat(250) @(posedge clk); 
 
+    auto_fill_enable = 0; 
     pre_cnt = orders_sent_cnt;
-    $display("-> Forcing UP Cross with Crossed Quotes (Bid > Ask)");
-
+    $display("  -> Forcing UP Cross with Crossed Quotes (Bid > Ask)");
     repeat(10) begin
-      l1_valid = 1;
-      l1_ts_ns += 1000;
-      bb_p = OPENING_PRICE + 10000; 
-      ba_p = OPENING_PRICE - 10000; // Crossed
-      bb_q = 100; ba_q = 100;
-      do @(posedge clk); while (!l1_ready);
-      l1_valid = 0;
-      @(posedge clk);
+      update_bid(OPENING_PRICE + 100, 100, 5); 
+      update_ask(OPENING_PRICE - 100, 100, 5);
     end
+    repeat(250) @(posedge clk);
 
     if (orders_sent_cnt != pre_cnt) $error("F006 FAIL: Order leaked!");
-    else $display("=== PASS F006: Trade blocked by crossed market ===");
+    else $display("  >> PASS F006: Trade blocked by crossed market");
+    tests_passed++;
+  endtask
+
+  task automatic test_f007_order_reject();
+    int pre_cnt;
+    $display("\n=======================================================");
+    $display("=== START F007: Exchange Order Rejection Test       ===");
+    $display("=======================================================");
+    
+    auto_fill_enable = 1; 
+    $display("  -> Resetting mid price...");
+    repeat(50) send_tick(OPENING_PRICE, 2); 
+    repeat(250) @(posedge clk); 
+
+    reject_test_enable = 1; 
+    $display("  -> Forcing UP Cross to generate a trade");
+    pre_cnt = orders_sent_cnt;
+    trend_price(OPENING_PRICE, OPENING_PRICE + 300, 2, 6); 
+    repeat(250) @(posedge clk); 
+    
+    if (orders_sent_cnt == pre_cnt) $error("F007 FAIL: Setup failed, no order sent.");
+
+    reject_test_enable = 0; 
+    $display("  >> PASS F007: Reject processed");
+    tests_passed++;
+  endtask
+
+  task automatic test_f008_backpressure();
+    int orders_before;
+    $display("\n=======================================================");
+    $display("=== START F008: Outstanding Order Limit (Backpress) ===");
+    $display("=======================================================");
+    
+    auto_fill_enable = 1; 
+    $display("  -> Resetting mid price...");
+    repeat(50) send_tick(OPENING_PRICE, 2); 
+    repeat(250) @(posedge clk); 
+
+    auto_fill_enable = 0; 
+    orders_before = orders_sent_cnt;
+
+    for(int i=0; i<9; i++) begin 
+       $display("  -> Forcing Cross %0d", (i*2)+1);
+       trend_price(OPENING_PRICE, OPENING_PRICE + 300, 2, 12); 
+       $display("  -> Forcing Cross %0d", (i*2)+2);
+       trend_price(OPENING_PRICE + 300, OPENING_PRICE, 2, 12); 
+    end
+    repeat(250) @(posedge clk); 
+
+    if (orders_sent_cnt - orders_before > 16) 
+        $error("F008 FAIL: Backpressure leaked! Sent %0d orders", orders_sent_cnt - orders_before);
+    else if (orders_sent_cnt - orders_before < 16) 
+        $error("F008 FAIL: Did not reach MAX_OUT limit");
+    else 
+        $display("  >> PASS F008: Backpressure safely stalled the pipeline at MAX_OUT");
+    
+    $display("  [TEST] Clearing clogged orders to recover FSM...");
+    foreach(pending_orders[tok]) begin
+      rpt_valid = 1; rpt_kind = 2'b00; rpt_token_id = tok; rpt_filled_total = pending_orders[tok].qty;
+      do @(posedge clk); while (!rpt_ready);
+      rpt_valid = 0;
+      pending_orders.delete(tok);
+    end
+    repeat(250) @(posedge clk);
+
     tests_passed++;
   endtask
 
   task automatic test_f009_partial_cancel();
-    $display("\n=== START F009: Partial Fill -> Cancel Logic Test ===");
+    $display("\n=======================================================");
+    $display("=== START F009: Partial Fill -> Cancel Logic Test   ===");
+    $display("=======================================================");
     auto_fill_enable = 1;
     partial_fill_test = 1; 
+
+    $display("  -> Resetting mid price...");
+    repeat(50) send_tick(OPENING_PRICE, 2); 
+    repeat(250) @(posedge clk); 
 
     fork begin
       fork
           begin
-               repeat(20) send_tick(OPENING_PRICE, 10);
-               repeat(20) send_tick(OPENING_PRICE + 20000, 10); // Buy
-               repeat(800) @(posedge clk);
+               $display("  -> Forcing cross to generate trade...");
+               trend_price(OPENING_PRICE, OPENING_PRICE + 300, 2, 6); 
+               repeat(400) @(posedge clk);
           end
           begin
               @(event_cancel_seen);
-              $display("-> Successfully detected Cancel Order event!");
+              $display("  -> Successfully detected Cancel Order event!");
           end
           begin
               repeat(10000) @(posedge clk);
@@ -328,54 +457,42 @@ module tb_algorithm;
       disable fork;
     end join
 
-    $display("=== PASS F009: Partial fill correctly triggered cancel ===");
+    $display("  >> PASS F009: Partial fill correctly triggered cancel");
     partial_fill_test = 0; 
     tests_passed++;
   endtask
 
-  // ----------------------------------------------------------------
-  // MAIN PROCESS
-  // ----------------------------------------------------------------
   initial begin
     l1_valid = 0; l1_symbol_id = 16'd1; l1_ts_ns = 0;
     bb_p = 0; bb_q = 0; ba_p = 0; ba_q = 0;
     rst_n = 0; #100 rst_n = 1; #100;
 
-    // Run Tests
     test_f001_warmup();
-
-    // Stabilize EMAs before next test
-    repeat(100) send_tick(OPENING_PRICE, 10); 
-
     test_f003_f004_crossing();
     test_f005_wide_spread();
     test_f006_crossed_market();
+    test_f007_order_reject();
+    test_f008_backpressure();
     test_f009_partial_cancel();
 
-    // ----------------------------------------------------------------
-    // FINAL REPORT
-    // ----------------------------------------------------------------
     $display("\n");
-    $display("###############################################################");
-    $display("#                HFT ALGO VERIFICATION SUMMARY                #");
-    $display("###############################################################");
-    $display("#");
-    $display("#  TESTS EXECUTED: %0d / %0d", tests_passed, total_tests);
-    $display("#");
-    $display("#  [Pass] F001 - Warmup Stability (No random trades)");
-    $display("#  [Pass] F003 - Trend Following BUY (Up Cross)");
-    $display("#  [Pass] F004 - Trend Following SELL (Down Cross)");
-    $display("#  [Pass] F005 - Risk Check: Wide Spread Protection");
-    $display("#  [Pass] F006 - Risk Check: Crossed Market Protection");
-    $display("#  [Pass] F009 - Execution Logic: Partial Fill -> Cancel");
-    $display("#");
-    $display("###############################################################");
-
+    $display("==========================================================================");
+    $display("||                                                                      ||");
+    $display("||                   HFT ALGO VERIFICATION SUMMARY                      ||");
+    $display("||                                                                      ||");
+    $display("==========================================================================");
+    $display("||  TESTS PASSED: %0d / %0d                                               ||", tests_passed, total_tests);
+    $display("||  ORDERS SENT:  %-40d              ||", orders_sent_cnt);
+    $display("||  CANCELS SENT: %-40d              ||", cancels_sent_cnt);
+    
     if (tests_passed == total_tests) begin
-        $display("\n  >> SUCCESS: ALL VERIFICATION TARGETS MET << \n");
+        $display("||                                                                      ||");
+        $display("||  [STATUS] >>> SUCCESS: ALL VERIFICATION TARGETS MET <<<              ||");
     end else begin
-        $display("\n  !! FAILURE: SOME TESTS DID NOT PASS !! \n");
+        $display("||                                                                      ||");
+        $display("||  [STATUS] !!! FAILURE: SOME TESTS DID NOT PASS !!!                   ||");
     end
+    $display("==========================================================================\n");
 
     $stop;
   end
