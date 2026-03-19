@@ -1,10 +1,65 @@
 # Orderbook Layer Configuration
 # Parses minimal fields needed to drive orderbook input stream.
+# Intended input file: Algorithm_Test_Vectors.xlsx
 
 layer: orderbook
 
-# Update this to your worksheet name if needed.
-sheet_name: NetIO_Test
+# Parse sheets in this exact top-down order.
+sheet_names:
+  - F001_Warmup
+  - F003_LowerBaseline
+  - F003_UPCross
+  - F003_UPCrossHold
+  - F004_UpperBaseline
+  - F004_DownCross
+  - F004_DownCrossHold
+  - F005_ResetMid
+  - F005_UPCrossBlocked
+  - F006_ResetMid
+  - F006_CrossedQuotes
+  - F007_ResetMid
+  - F007_UPReject
+  - F007_UPRejectHold
+  - F008_ResetMid
+  - F008_Cross1_Backpressure
+  - F008_Cross1_BackpressureHold
+  - F008_Cross2_Backpressure
+  - F008_Cross2_BackpressureHold
+  - F008_Cross3_Backpressure
+  - F008_Cross3_BackpressureHold
+  - F008_Cross4_Backpressure
+  - F008_Cross4_BackpressureHold
+  - F008_Cross5_Backpressure
+  - F008_Cross5_BackpressureHold
+  - F008_Cross6_Backpressure
+  - F008_Cross6_BackpressureHold
+  - F008_Cross7_Backpressure
+  - F008_Cross7_BackpressureHold
+  - F008_Cross8_Backpressure
+  - F008_Cross8_BackpressureHold
+  - F008_Cross9_Backpressure
+  - F008_Cross9_BackpressureHold
+  - F008_Cross10_Backpressure
+  - F008_Cross10_BackpressureHold
+  - F008_Cross11_Backpressure
+  - F008_Cross11_BackpressureHold
+  - F008_Cross12_Backpressure
+  - F008_Cross12_BackpressureHold
+  - F008_Cross13_Backpressure
+  - F008_Cross13_BackpressureHold
+  - F008_Cross14_Backpressure
+  - F008_Cross14_BackpressureHold
+  - F008_Cross15_Backpressure
+  - F008_Cross15_BackpressureHold
+  - F008_Cross16_Backpressure
+  - F008_Cross16_BackpressureHold
+  - F008_Cross17_Backpressure
+  - F008_Cross17_BackpressureHold
+  - F008_Cross18_Backpressure
+  - F008_Cross18_BackpressureHold
+  - F009_ResetMid
+  - F009_PartialFill
+  - F009_PartialFillHold
 
 columns:
   - Message Type
@@ -19,5 +74,5 @@ data_types:
   Price: float
 
 output:
-  # Generated include file consumed by orderbook_test_controller.sv
-  sv_include_path: hw/orderbook/src/rtl/orderbook_vectors_generated.svh
+  # Generated in per-sheet output folder, e.g. outputs/F001_Warmup/orderbook_vectors_generated.svh
+  filename: orderbook_vectors_generated.svh

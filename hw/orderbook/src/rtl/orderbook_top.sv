@@ -22,52 +22,25 @@ module orderbook_top (
     output logic [6:0]  HEX5
 );
 
-    // PLL signals
-    logic pll_clk_150;          // PLL output clock 150MHz for orderbook
-    logic pll_locked;           // PLL lock status
-    logic rst_n_sync;           // Synchronized reset: active when KEY[0] AND pll_locked
-    
-    // Instantiate PLL (configured for 150MHz output)
-    // Use CLOCK_50 directly for 50MHz domain (test controller and display)
-    pll_ip u_pll (
-        .clk_clk            (CLOCK_50),
-        .reset_reset_n      (KEY[0]),
-        .pll_0_outclk0_clk  (pll_clk_150),  // 150MHz for orderbook
-        .pll_0_locked_export(pll_locked)
-    );
-    
-    // Combine external reset with PLL lock status
-    // System stays in reset until PLL is locked and external reset is released
-    assign rst_n_sync = KEY[0] & pll_locked;
+    // Single clock/reset domain (50MHz)
+    logic rst_n_sync;
+    assign rst_n_sync = KEY[0];
 
-    // Test controller outputs (50MHz domain)
-    logic        test_side_50;
-    logic [31:0] test_price_50;
-    logic [31:0] test_qty_50;
-    logic        test_valid_50;
-    
-    // Test controller outputs synchronized to 150MHz domain
-    logic        test_side_150;
-    logic [31:0] test_price_150;
-    logic [31:0] test_qty_150;
-    logic        test_valid_150;
-    
-    // Orderbook outputs (150MHz domain)
-    logic [31:0] best_bid_price_150;
-    logic [31:0] best_bid_qty_150;
-    logic [31:0] best_ask_price_150;
-    logic [31:0] best_ask_qty_150;
-    logic        best_valid_150;
-    
-    // Orderbook outputs synchronized to 50MHz domain
-    logic [31:0] best_bid_price_50;
-    logic [31:0] best_bid_qty_50;
-    logic [31:0] best_ask_price_50;
-    logic [31:0] best_ask_qty_50;
-    logic        best_valid_50;
+    // Test controller outputs
+    logic        test_side;
+    logic [31:0] test_price;
+    logic [31:0] test_qty;
+    logic        test_valid;
+
+    // Orderbook outputs
+    logic [31:0] best_bid_price;
+    logic [31:0] best_bid_qty;
+    logic [31:0] best_ask_price;
+    logic [31:0] best_ask_qty;
+    logic        best_valid;
 
     /* ================================
-        Test Controller for Manual Input (50MHz domain)
+        Test Controller (50MHz domain)
         ================================ */
     orderbook_test_controller u_test_ctrl (
         .clk            (CLOCK_50),
@@ -75,121 +48,27 @@ module orderbook_top (
         .SW             (SW),
         .KEY            (KEY),
         .LEDR           (LEDR),
-        .side_out       (test_side_50),
-        .price_out      (test_price_50),
-        .delta_qty_out  (test_qty_50),
-        .valid_out      (test_valid_50)
-    );
-    
-    /* ================================
-        CDC: Test Controller (50MHz) -> Orderbook (150MHz)
-        ================================ */
-    // Synchronize single-bit side signal
-    cdc_sync_bit u_cdc_side (
-        .src_bit    (test_side_50),
-        .dst_clk    (pll_clk_150),
-        .dst_rst_n  (rst_n_sync),
-        .dst_bit    (test_side_150)
-    );
-    
-    // Synchronize price bus
-    cdc_sync_bus #(.WIDTH(32)) u_cdc_price (
-        .src_clk    (CLOCK_50),
-        .src_rst_n  (rst_n_sync),
-        .src_data   (test_price_50),
-        .src_valid  (test_valid_50),
-        .dst_clk    (pll_clk_150),
-        .dst_rst_n  (rst_n_sync),
-        .dst_data   (test_price_150),
-        .dst_valid  (test_valid_150)
-    );
-    
-    // Synchronize quantity bus
-    cdc_sync_bus #(.WIDTH(32)) u_cdc_qty (
-        .src_clk    (CLOCK_50),
-        .src_rst_n  (rst_n_sync),
-        .src_data   (test_qty_50),
-        .src_valid  (test_valid_50),
-        .dst_clk    (pll_clk_150),
-        .dst_rst_n  (rst_n_sync),
-        .dst_data   (test_qty_150),
-        .dst_valid  ()  // Not used, valid comes from price
+        .side_out       (test_side),
+        .price_out      (test_price),
+        .delta_qty_out  (test_qty),
+        .valid_out      (test_valid)
     );
 
     /* ================================
-        Orderbook Module (150MHz domain)
+        Orderbook Module (50MHz domain)
         ================================ */
     orderbook u_orderbook (
-        .clk             (pll_clk_150),
+        .clk             (CLOCK_50),
         .rst_n           (rst_n_sync),
-        .side_in         (side_t'(test_side_150)),
-        .price_in        (test_price_150),
-        .delta_qty_in    (test_qty_150),
-        .valid_in        (test_valid_150),
-        .best_bid_price  (best_bid_price_150),
-        .best_bid_qty    (best_bid_qty_150),
-        .best_ask_price  (best_ask_price_150),
-        .best_ask_qty    (best_ask_qty_150),
-        .best_valid      (best_valid_150)
-    );
-    
-    /* ================================
-        CDC: Orderbook (150MHz) -> Display (50MHz)
-        ================================ */
-    // Synchronize bid price
-    cdc_sync_bus #(.WIDTH(32)) u_cdc_bid_price (
-        .src_clk    (pll_clk_150),
-        .src_rst_n  (rst_n_sync),
-        .src_data   (best_bid_price_150),
-        .src_valid  (best_valid_150),
-        .dst_clk    (CLOCK_50),
-        .dst_rst_n  (rst_n_sync),
-        .dst_data   (best_bid_price_50),
-        .dst_valid  ()
-    );
-    
-    // Synchronize bid quantity
-    cdc_sync_bus #(.WIDTH(32)) u_cdc_bid_qty (
-        .src_clk    (pll_clk_150),
-        .src_rst_n  (rst_n_sync),
-        .src_data   (best_bid_qty_150),
-        .src_valid  (best_valid_150),
-        .dst_clk    (CLOCK_50),
-        .dst_rst_n  (rst_n_sync),
-        .dst_data   (best_bid_qty_50),
-        .dst_valid  ()
-    );
-    
-    // Synchronize ask price
-    cdc_sync_bus #(.WIDTH(32)) u_cdc_ask_price (
-        .src_clk    (pll_clk_150),
-        .src_rst_n  (rst_n_sync),
-        .src_data   (best_ask_price_150),
-        .src_valid  (best_valid_150),
-        .dst_clk    (CLOCK_50),
-        .dst_rst_n  (rst_n_sync),
-        .dst_data   (best_ask_price_50),
-        .dst_valid  ()
-    );
-    
-    // Synchronize ask quantity
-    cdc_sync_bus #(.WIDTH(32)) u_cdc_ask_qty (
-        .src_clk    (pll_clk_150),
-        .src_rst_n  (rst_n_sync),
-        .src_data   (best_ask_qty_150),
-        .src_valid  (best_valid_150),
-        .dst_clk    (CLOCK_50),
-        .dst_rst_n  (rst_n_sync),
-        .dst_data   (best_ask_qty_50),
-        .dst_valid  ()
-    );
-    
-    // Synchronize combined valid signal
-    cdc_sync_bit u_cdc_valid (
-        .src_bit    (best_valid_150),
-        .dst_clk    (CLOCK_50),
-        .dst_rst_n  (rst_n_sync),
-        .dst_bit    (best_valid_50)
+        .side_in         (side_t'(test_side)),
+        .price_in        (test_price),
+        .delta_qty_in    (test_qty),
+        .valid_in        (test_valid),
+        .best_bid_price  (best_bid_price),
+        .best_bid_qty    (best_bid_qty),
+        .best_ask_price  (best_ask_price),
+        .best_ask_qty    (best_ask_qty),
+        .best_valid      (best_valid)
     );
 
     /* ================================
@@ -202,11 +81,11 @@ module orderbook_top (
         .HEX3            (HEX3),
         .HEX4            (HEX4),
         .HEX5            (HEX5),
-        .best_bid_price  (best_bid_price_50),
-        .best_bid_qty    (best_bid_qty_50),
-        .best_ask_price  (best_ask_price_50),
-        .best_ask_qty    (best_ask_qty_50),
-        .best_valid      (best_valid_50),
+        .best_bid_price  (best_bid_price),
+        .best_bid_qty    (best_bid_qty),
+        .best_ask_price  (best_ask_price),
+        .best_ask_qty    (best_ask_qty),
+        .best_valid      (best_valid),
         .clk             (CLOCK_50),
         .reset_n         (rst_n_sync),
         .sw_price_qty    (SW[0]),  // SW[0]: 0=Price, 1=Quantity

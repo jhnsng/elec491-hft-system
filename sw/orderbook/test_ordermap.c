@@ -3,31 +3,12 @@
 #include <stdbool.h>
 #include <assert.h>
 
-// Manual byte order conversions for Windows
-static inline uint32_t htonl_manual(uint32_t x) {
-    return ((x & 0xFF000000) >> 24) |
-           ((x & 0x00FF0000) >> 8)  |
-           ((x & 0x0000FF00) << 8)  |
-           ((x & 0x000000FF) << 24);
-}
-
-static inline uint64_t htobe64_manual(uint64_t x) {
-    return ((x & 0xFF00000000000000ULL) >> 56) |
-           ((x & 0x00FF000000000000ULL) >> 40) |
-           ((x & 0x0000FF0000000000ULL) >> 24) |
-           ((x & 0x000000FF00000000ULL) >> 8)  |
-           ((x & 0x00000000FF000000ULL) << 8)  |
-           ((x & 0x0000000000FF0000ULL) << 24) |
-           ((x & 0x000000000000FF00ULL) << 40) |
-           ((x & 0x00000000000000FFULL) << 56);
-}
-
 // ob_update is packed into 64 bits
 typedef uint64_t ob_update;
 
 // Unpack macros
 #define OB_UPDATE_GET_SIDE(x)     ((x) >> 63)
-#define OB_UPDATE_GET_PRICE(x)    ((((x) >> 32) & 0x7FFFFFFF) << 2)
+#define OB_UPDATE_GET_PRICE(x)    (((x) >> 32) & 0x7FFFFFFF) << 2
 #define OB_UPDATE_GET_QTY(x)      ((x) & 0xFFFFFFFF)
 
 typedef struct {
@@ -46,7 +27,7 @@ extern ob_update order_cancel_execute(uint64_t id, uint32_t qty);
 
 void test_order_add_buy() {
     printf("Test 1: Add buy order...\n");
-    ob_update upd = order_add(htobe64_manual(100), htonl_manual(50000), htonl_manual(100), 'B');
+    ob_update upd = order_add(100, 50000, 100, 'B');
     
     assert(OB_UPDATE_GET_PRICE(upd) == 50000);
     assert(OB_UPDATE_GET_QTY(upd) == 100);
@@ -59,7 +40,7 @@ void test_order_add_buy() {
 
 void test_order_add_sell() {
     printf("Test 2: Add sell order...\n");
-    ob_update upd = order_add(htobe64_manual(200), htonl_manual(51000), htonl_manual(250), 'S');
+    ob_update upd = order_add(200, 51000, 250, 'S');
     
     assert(OB_UPDATE_GET_PRICE(upd) == 51000);
     assert(OB_UPDATE_GET_QTY(upd) == 250);
@@ -73,10 +54,10 @@ void test_order_add_sell() {
 void test_partial_cancel() {
     printf("Test 3: Partial cancel/execute...\n");
     // First add an order
-    order_add(htobe64_manual(300), htonl_manual(49500), htonl_manual(500), 'B');
+    order_add(300, 49500, 500, 'B');
     
     // Partial cancel/execute 200 units
-    ob_update upd = order_cancel_execute(htobe64_manual(300), htonl_manual(200));
+    ob_update upd = order_cancel_execute(300, 200);
     
     assert(OB_UPDATE_GET_PRICE(upd) == 49500);
     assert(OB_UPDATE_GET_QTY(upd) == 200);
@@ -90,10 +71,10 @@ void test_partial_cancel() {
 void test_full_cancel() {
     printf("Test 4: Full cancel/execute...\n");
     // First add an order
-    order_add(htobe64_manual(400), htonl_manual(52000), htonl_manual(150), 'S');
+    order_add(400, 52000, 150, 'S');
     
     // Fully cancel/execute
-    ob_update upd = order_cancel_execute(htobe64_manual(400), htonl_manual(150));
+    ob_update upd = order_cancel_execute(400, 150);
     
     assert(OB_UPDATE_GET_PRICE(upd) == 52000);
     assert(OB_UPDATE_GET_QTY(upd) == 150);
@@ -107,10 +88,10 @@ void test_full_cancel() {
 void test_over_cancel() {
     printf("Test 5: Over-cancel (cancel more than available)...\n");
     // First add an order
-    order_add(htobe64_manual(500), htonl_manual(48000), htonl_manual(100), 'B');
+    order_add(500, 48000, 100, 'B');
     
     // Try to cancel more than available
-    ob_update upd = order_cancel_execute(htobe64_manual(500), htonl_manual(200));
+    ob_update upd = order_cancel_execute(500, 200);
     
     assert(OB_UPDATE_GET_PRICE(upd) == 48000);
     assert(OB_UPDATE_GET_QTY(upd) == 200);
@@ -132,16 +113,11 @@ void test_memory_size() {
 
 void test_specific_order() {
     printf("Test 7: Specific order (ID=1, Buy, Price=28000, Qty=100)...\n");
-    // Pass values in big-endian (as they arrive from ITCH)
-    ob_update upd = order_add(htobe64_manual(1), htonl_manual(28000), htonl_manual(100), 'B');
-    
+    ob_update upd = order_add(1, 28000, 100, 'B');
+
     // Expected: side=0, price>>2=7000(0x1B58), qty=100(0x64)
     // Full 64-bit: 0x00001B5800000064
-    
-    printf("  DEBUG: Unpacked price = %u (0x%X)\n", OB_UPDATE_GET_PRICE(upd), OB_UPDATE_GET_PRICE(upd));
-    printf("  DEBUG: Unpacked qty = %u (0x%X)\n", OB_UPDATE_GET_QTY(upd), OB_UPDATE_GET_QTY(upd));
-    printf("  DEBUG: Unpacked side = %llu\n", OB_UPDATE_GET_SIDE(upd));
-    
+
     assert(OB_UPDATE_GET_PRICE(upd) == 28000);
     assert(OB_UPDATE_GET_QTY(upd) == 100);
     assert(OB_UPDATE_GET_SIDE(upd) == 0);  // Buy = 0
@@ -149,14 +125,14 @@ void test_specific_order() {
     assert(order_map[1].qty == 100);
     assert(order_map[1].side == 0);
     assert(order_map[1].valid == 1);
-    
+
     printf("  Price: 28000 (0x6D60)\n");
     printf("  Price >> 2: 7000 (0x1B58)\n");
     printf("  Quantity: 100 (0x64)\n");
     printf("  Packed value: 0x%016llX\n", upd);
     printf("  Expected:     0x00001B5800000064\n");
     assert(upd == 0x00001B5800000064ULL);
-    
+
     printf("  ✓ Specific order matches expected values\n");
 }
 

@@ -13,6 +13,7 @@ Usage:
 import argparse
 import sys
 from pathlib import Path
+import re
 
 from excel_to_json import ExcelToJsonParser
 from decoders.exchange_decoder import ExchangeDecoder
@@ -37,8 +38,13 @@ class TestVectorGenerator:
         self.config = self.parser.get_config()
         self.output_dir = Path(__file__).parent / "outputs"
         self.output_dir.mkdir(exist_ok=True)
+
+    def _sanitize_sheet_name(self, sheet_name: str) -> str:
+        """Create a filesystem-safe folder name from a sheet name."""
+        sanitized = re.sub(r"[^A-Za-z0-9._-]", "_", str(sheet_name).strip())
+        return sanitized or "sheet"
     
-    def get_decoder(self):
+    def get_decoder(self, output_dir: Path):
         """
         Instantiate the appropriate decoder based on the layer specified in config.
         
@@ -57,7 +63,7 @@ class TestVectorGenerator:
             raise ValueError(f"Unknown layer: {layer}. Valid layers: {list(decoder_map.keys())}")
         
         decoder_class = decoder_map[layer]
-        return decoder_class(self.config, self.output_dir)
+        return decoder_class(self.config, output_dir)
     
     def generate(self):
         """Main generation workflow."""
@@ -67,20 +73,31 @@ class TestVectorGenerator:
         print(f"Layer:  {self.config['layer']}")
         print()
         
-        # Step 1: Parse Excel file
-        print("Step 1: Parsing Excel file...")
-        json_data = self.parser.parse()
-        print(f"  Parsed {len(json_data)} rows")
-        
-        # Step 2: Get appropriate decoder
-        print("\nStep 2: Initializing decoder...")
-        decoder = self.get_decoder()
-        print(f"  Using {decoder.__class__.__name__}")
-        
-        # Step 3: Decode and generate output
-        print("\nStep 3: Generating output files...")
-        output_files = decoder.decode(json_data)
-        
+        # Step 1: Parse configured sheets in order
+        print("Step 1: Parsing Excel sheets...")
+        sheet_results = self.parser.parse_all_sheets()
+        print(f"  Parsed {len(sheet_results)} sheet(s)")
+
+        # Step 2: Decode each sheet into a sheet-specific output folder
+        print("\nStep 2: Generating output files per sheet...")
+        output_files = []
+        for sheet_result in sheet_results:
+            sheet_name = sheet_result["sheet_name"]
+            sheet_index = sheet_result["sheet_index"]
+            json_data = sheet_result["rows"]
+
+            sheet_output_dir = self.output_dir / self._sanitize_sheet_name(sheet_name)
+            sheet_output_dir.mkdir(parents=True, exist_ok=True)
+
+            decoder = self.get_decoder(sheet_output_dir)
+
+            # Optional context hook for decoders that need sheet metadata.
+            if hasattr(decoder, "set_sheet_context"):
+                decoder.set_sheet_context(sheet_name=sheet_name, sheet_index=sheet_index)
+
+            print(f"  - Sheet {sheet_index}: {sheet_name} ({len(json_data)} rows)")
+            output_files.extend(decoder.decode(json_data))
+
         print("\n=== Generation Complete ===")
         print("Output files:")
         for output_file in output_files:

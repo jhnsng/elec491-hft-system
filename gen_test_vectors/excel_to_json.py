@@ -49,19 +49,49 @@ class ExcelToJsonParser:
         Returns:
             List of dictionaries, each representing a row with specified columns
         """
+        sheet_results = self.parse_all_sheets()
+        if not sheet_results:
+            return []
+        return sheet_results[0]["rows"]
+
+    def get_sheet_names_in_order(self) -> List[str]:
+        """Return sheet names to parse in the order specified by config."""
+        if "sheet_names" in self.config:
+            sheet_names = self.config["sheet_names"]
+            if not isinstance(sheet_names, list) or not sheet_names:
+                raise ValueError("'sheet_names' must be a non-empty list when provided")
+            return [str(name) for name in sheet_names]
+
+        if "sheet_name" in self.config:
+            return [str(self.config["sheet_name"])]
+
+        return [0]
+
+    def parse_all_sheets(self) -> List[Dict[str, Any]]:
+        """
+        Parse all configured sheets in order.
+
+        Returns:
+            List of sheet parse results in order:
+            [
+              {
+                "sheet_name": "...",
+                "sheet_index": 1,
+                "rows": [...]
+              },
+              ...
+            ]
+        """
         if not self.input_path.exists():
             raise FileNotFoundError(f"Input Excel file not found: {self.input_path}")
-        
-        # Read Excel file
-        df = pd.read_excel(self.input_path, sheet_name=self.config.get('sheet_name', 0))
-        
+
         # Get column specifications from config
         columns_config = self.config['columns']
-        
+
         # Extract only the columns specified in the config
         column_names = []
         column_mappings = {}
-        
+
         for col_spec in columns_config:
             if isinstance(col_spec, dict):
                 # Format: {original_name: mapped_name}
@@ -73,37 +103,57 @@ class ExcelToJsonParser:
                 # Simple string column name
                 column_names.append(col_spec)
                 column_mappings[col_spec] = col_spec
-        
-        # Verify columns exist
-        missing_cols = set(column_names) - set(df.columns)
-        if missing_cols:
-            raise ValueError(f"Columns not found in Excel: {missing_cols}")
-        
-        # Select and rename columns
-        df_selected = df[column_names].copy()
-        df_selected = df_selected.rename(columns=column_mappings)
-        
-        # Add row number (1-indexed to match Excel)
-        df_selected.insert(0, 'row_number', range(2, len(df_selected) + 2))  # +2 for header row
-        
-        # Convert to list of dictionaries (JSON-serializable)
-        json_data = df_selected.to_dict('records')
-        
-        # Apply any data type conversions specified in config
-        if 'data_types' in self.config:
-            json_data = self._apply_data_types(json_data, self.config['data_types'])
-        
-        return json_data
+
+        results: List[Dict[str, Any]] = []
+        sheet_names = self.get_sheet_names_in_order()
+
+        for idx, sheet_name in enumerate(sheet_names, start=1):
+            df = pd.read_excel(self.input_path, sheet_name=sheet_name)
+
+            # Verify columns exist per sheet
+            missing_cols = set(column_names) - set(df.columns)
+            if missing_cols:
+                raise ValueError(f"Columns not found in sheet '{sheet_name}': {missing_cols}")
+
+            # Select and rename columns
+            df_selected = df[column_names].copy()
+            df_selected = df_selected.rename(columns=column_mappings)
+
+            # Add row number (1-indexed to match Excel)
+            df_selected.insert(0, 'row_number', range(2, len(df_selected) + 2))
+
+            # Convert to list of dictionaries (JSON-serializable)
+            json_data = df_selected.to_dict('records')
+
+            # Apply any data type conversions specified in config
+            if 'data_types' in self.config:
+                json_data = self._apply_data_types(json_data, self.config['data_types'])
+
+            results.append(
+                {
+                    "sheet_name": sheet_name,
+                    "sheet_index": idx,
+                    "rows": json_data,
+                }
+            )
+
+        return results
     
     def _apply_data_types(self, data: List[Dict], type_specs: Dict[str, str]) -> List[Dict]:
         """Apply data type conversions to JSON data."""
+        def _to_numeric(value: Any) -> float:
+            if isinstance(value, str):
+                cleaned = value.replace("$", "").replace(",", "").strip()
+                return float(cleaned)
+            return float(value)
+
         for row in data:
             for field, dtype in type_specs.items():
                 if field in row and pd.notna(row[field]):
                     if dtype == 'int':
-                        row[field] = int(row[field])
+                        row[field] = int(_to_numeric(row[field]))
                     elif dtype == 'float':
-                        row[field] = float(row[field])
+                        row[field] = _to_numeric(row[field])
                     elif dtype == 'str':
                         row[field] = str(row[field])
                     elif dtype == 'bool':

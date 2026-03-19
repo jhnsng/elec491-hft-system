@@ -46,13 +46,13 @@ static order_entry_t order_map[MAX_ORDERS];
 ob_update order_add(uint64_t id, uint32_t price,
                     uint32_t qty, uint8_t side)
 {
-    // Convert from network byte order (big-endian) to host byte order
+    // Convert from network byte order (little-endian) to host byte order
     id = be64toh_manual(id);
     price = ntohl_manual(price);
     
     order_entry_t *e = &order_map[id];
     e->price = price;
-    e->qty   = qty;
+    e->qty   += qty;
     e->side  = (side == 'S');  // 'B' = 0 (buy), 'S' = 1 (sell)
     e->valid = 1;
     
@@ -62,23 +62,20 @@ ob_update order_add(uint64_t id, uint32_t price,
 
 ob_update order_cancel_execute(uint64_t id, uint32_t qty)
 {
-    // Convert from network byte order (big-endian) to host byte order
+    // Convert from network byte order (little-endian) to host byte order
     id = be64toh_manual(id);
-    qty = ntohl_manual(qty);  // Convert quantity from big-endian
     
     order_entry_t *e = &order_map[id];
     
     // Return NEGATIVE quantity for cancel/execute using two's complement: ~qty + 1
-    uint32_t negated_qty = ~qty + 1;
+    uint32_t negated_qty = ~ntohl_manual(qty) + 1;
     
-    // Convert back to big-endian for transmission
+    // Convert back to little-endian for transmission
     negated_qty = htonl_manual(negated_qty);
     
     // Pack into 64 bits: [side(1bit)][price>>2(31bits)][negated_qty(32bits)]
     uint64_t packed = ((uint64_t)e->side << 63) | ((uint64_t)(e->price >> 2) << 32) | negated_qty;
     
-    if (!e->valid) return packed;
-
     if (qty >= e->qty) {
         // fully canceled/executed
         e->qty   = 0;
@@ -87,6 +84,29 @@ ob_update order_cancel_execute(uint64_t id, uint32_t qty)
         // partial cancel/execute
         e->qty -= qty;
     }
+    
+    return packed;
+}
+
+ob_update order_delete(uint64_t id) {
+    // Convert from network byte order (little-endian) to host byte order
+    id = be64toh_manual(id);
+    
+    order_entry_t *e = &order_map[id];
+    
+    // Return NEGATIVE quantity for delete using two's complement: ~qty + 1
+    uint32_t negated_qty = ~ntohl_manual(e->qty) + 1;
+    
+    // Convert back to little-endian for transmission
+    negated_qty = htonl_manual(negated_qty);
+    
+    // Pack into 64 bits: [side(1bit)][price>>2(31bits)][negated_qty(32bits)]
+    uint64_t packed = ((uint64_t)e->side << 63) | ((uint64_t)(e->price >> 2) << 32) | negated_qty;
+    
+    if (!e->valid) return packed;
+
+    e->qty   = 0;
+    e->valid = 0;
     
     return packed;
 }
