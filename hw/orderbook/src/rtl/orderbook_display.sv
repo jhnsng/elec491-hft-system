@@ -134,15 +134,7 @@ module orderbook_display (
             HEX4 <= HEX_BLANK;
             HEX5 <= HEX_BLANK;
         end else begin
-            if (!selected_valid) begin
-                // Display dashes when no valid data
-                HEX0 <= HEX_DASH;
-                HEX1 <= HEX_DASH;
-                HEX2 <= HEX_DASH;
-                HEX3 <= HEX_DASH;
-                HEX4 <= HEX_DASH;
-                HEX5 <= HEX_DASH;
-            end else if (has_overflow) begin
+            if (has_overflow) begin
                 // Show "E" on highest display to indicate overflow
                 HEX0 <= bcd_to_7seg(digit[0]);
                 HEX1 <= bcd_to_7seg(digit[1]);

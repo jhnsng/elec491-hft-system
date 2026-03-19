@@ -1,0 +1,23 @@
+# Orderbook Layer Configuration
+# Parses minimal fields needed to drive orderbook input stream.
+
+layer: orderbook
+
+# Update this to your worksheet name if needed.
+sheet_name: NetIO_Test
+
+columns:
+  - Message Type
+  - Side
+  - Shares
+  - Price
+
+data_types:
+  Message Type: str
+  Side: str
+  Shares: int
+  Price: float
+
+output:
+  # Generated include file consumed by orderbook_test_controller.sv
+  sv_include_path: hw/orderbook/src/rtl/orderbook_vectors_generated.svh
