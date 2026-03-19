@@ -7,13 +7,12 @@ package algo_cfg_pkg;
   localparam logic [15:0] ALPHA_SLOW_Q16   = 16'd4855; // 0.015625
   localparam logic [15:0] ALPHA_SIGNAL_Q16 = 16'd13107; // 0.03125
 
-  // Basic risk knobs
-  localparam logic [31:0] MAX_SPREAD_TICKS = 32'd500;  // example: $0.05 in 1e-4 units
+  // Basic risk knobs - SCALED DOWN FOR 2 DECIMAL PLACES (CENTS)
+  localparam logic [31:0] MAX_SPREAD_TICKS = 32'd5;  // $0.05 in 1e-2 units
   localparam logic [31:0] DEFAULT_QTY      = 32'd100;
 
-  // In algo_cfg_pkg.sv
-  // If MACD is price-based, and 1 tick = 10 units?
-  localparam signed [63:0] CROSS_THRESHOLD = 64'd50; 
-
+  // MACD Cross Threshold
+  // Scaled down: previously 50 ($0.0050), now 1 ($0.01)
+  localparam signed [63:0] CROSS_THRESHOLD = 64'd1; 
 
 endpackage

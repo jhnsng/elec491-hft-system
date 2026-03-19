@@ -4,9 +4,48 @@ module algo_top (
   import hft_types_pkg::*;
   import algo_cfg_pkg::*;
 
-  // Backpressure from order path
-  logic sig_ready;
-  assign link.l1_ready = sig_ready;
+  // ----------------------------------------------------------------
+  // QUARTUS I/O ISOLATION BOUNDARY
+  // ----------------------------------------------------------------
+  // These force Quartus to measure timing from INSIDE the fabric
+  // rather than from the physical pins on the edge of the board.
+  (* preserve, dont_merge, dont_retime *) logic rst_n_reg;
+  (* preserve, dont_merge, dont_retime *) logic tok_req_ready_reg;
+
+  always_ff @(posedge link.clk) begin
+    rst_n_reg         <= link.rst_n;
+    tok_req_ready_reg <= link.tok_req_ready;
+  end
+
+  // ----------------------------------------------------------------
+  // Token request metadata FIFO 
+  // ----------------------------------------------------------------
+  localparam int META_DEPTH = 4;
+  localparam int META_PTR_W = $clog2(META_DEPTH);
+
+  typedef struct packed {
+    symbol_id_t sym;
+    logic [15:0] strat;
+  } tok_meta_t;
+
+  tok_meta_t meta_mem [META_DEPTH];
+  logic [META_PTR_W-1:0] meta_wr, meta_rd; 
+  logic [META_PTR_W:0] meta_count;         
+
+  logic meta_empty, meta_full;
+
+  assign meta_empty = (meta_count == 0);
+  assign meta_full  = (meta_count == META_DEPTH);
+
+  // ----------------------------------------------------------------
+  // Backpressure & Readiness Gate
+  // ----------------------------------------------------------------
+  logic fsm_sig_ready; 
+  logic sig_ready;     
+  logic pipe_ready; 
+
+  assign sig_ready = fsm_sig_ready && !meta_full; 
+  assign link.l1_ready = sig_ready && pipe_ready; 
 
   logic snap_fire;
   assign snap_fire = link.l1_valid && link.l1_ready;
@@ -24,8 +63,9 @@ module algo_top (
   side_e sig_side_reg;
   logic [31:0] sig_price_int_reg, sig_qty_reg;
 
-  always_ff @(posedge link.clk or negedge link.rst_n) begin
-    if (!link.rst_n) begin
+  always_ff @(posedge link.clk) begin
+    // Note: We use rst_n_reg here!
+    if (!rst_n_reg) begin
       sig_valid_reg     <= 1'b0;
       sig_enter_reg     <= 1'b0;
       sig_side_reg      <= SIDE_BUY;
@@ -42,9 +82,10 @@ module algo_top (
 
   feature_pipe u_feat (
     .clk(link.clk),
-    .rst_n(link.rst_n),
+    .rst_n(rst_n_reg),     // Intercepted Reset
     .snap_en(snap_fire),
-    .sig_ready(sig_ready),
+    .sig_ready(sig_ready), 
+    .pipe_ready(pipe_ready),
 
     .bb_p(link.l1.bb_p),
     .bb_q(link.l1.bb_q),
@@ -57,7 +98,6 @@ module algo_top (
     .max_spread    (MAX_SPREAD_TICKS),
     .cross_thresh  (CROSS_THRESHOLD),
 
-    // Connect feature_pipe to the pre-register wires
     .sig_valid(feat_valid),
     .sig_enter(feat_enter),
     .sig_side(feat_side),
@@ -67,30 +107,12 @@ module algo_top (
     .mid_out(mid_out)
   );
 
-  // Only enqueue real entry decisions
   logic sig_fire;
   assign sig_fire = sig_valid_reg && sig_enter_reg;
 
   // ----------------------------------------------------------------
-  // Token request metadata FIFO
+  // Token request metadata FIFO Tracking
   // ----------------------------------------------------------------
-  localparam int META_DEPTH = 4;
-  localparam int META_PTR_W = $clog2(META_DEPTH);
-
-  typedef struct packed {
-    symbol_id_t sym;
-    logic [15:0] strat;
-  } tok_meta_t;
-
-  tok_meta_t meta_mem [META_DEPTH];
-  logic [META_PTR_W-1:0] meta_wr, meta_rd; // Reduced to 2 bits!
-  logic [META_PTR_W:0] meta_count;         // 3-bit count (0 to 4)
-
-  logic meta_empty, meta_full;
-
-  assign meta_empty = (meta_count == 0);
-  assign meta_full  = (meta_count == META_DEPTH);
-
   tok_meta_t meta_head;
   assign meta_head = meta_mem[meta_rd];
 
@@ -98,33 +120,34 @@ module algo_top (
   assign meta_enq_pre = sig_fire && sig_ready;
 
   (* preserve *) logic meta_enq;
-  always_ff @(posedge link.clk or negedge link.rst_n) begin
-      if (!link.rst_n) meta_enq <= 1'b0;
-      else             meta_enq <= meta_enq_pre;
+  always_ff @(posedge link.clk) begin
+      if (!rst_n_reg) meta_enq <= 1'b0;
+      else            meta_enq <= meta_enq_pre;
   end
 
   logic meta_deq;
-  assign meta_deq = link.tok_req_valid && link.tok_req_ready;
+  // Intercepted tok_req_ready!
+  assign meta_deq = link.tok_req_valid && tok_req_ready_reg;
 
   logic meta_can_enq_pre;
   assign meta_can_enq_pre = !meta_full;
 
   logic meta_can_enq;
-  always_ff @(posedge link.clk or negedge link.rst_n) begin
-      if (!link.rst_n) meta_can_enq <= 1'b0;
-      else             meta_can_enq <= meta_can_enq_pre;
+  always_ff @(posedge link.clk) begin
+      if (!rst_n_reg) meta_can_enq <= 1'b0;
+      else            meta_can_enq <= meta_can_enq_pre;
   end
 
   tok_meta_t meta_mem_data_reg;
-  always_ff @(posedge link.clk or negedge link.rst_n) begin
-      if (!link.rst_n) meta_mem_data_reg <= '0;
-      else             meta_mem_data_reg <= '{ sym: link.l1.symbol_id, strat: 16'h0001 };
+  always_ff @(posedge link.clk) begin
+      if (!rst_n_reg) meta_mem_data_reg <= '0;
+      else            meta_mem_data_reg <= '{ sym: link.l1.symbol_id, strat: 16'h0001 };
   end
 
-  always_ff @(posedge link.clk or negedge link.rst_n) begin
+  always_ff @(posedge link.clk) begin
     logic do_read, do_write;
 
-    if (!link.rst_n) begin
+    if (!rst_n_reg) begin
       meta_wr <= '0;
       meta_rd <= '0;
       meta_count <= '0;
@@ -140,15 +163,13 @@ module algo_top (
         meta_wr <= meta_wr + 1'b1;
       end
 
-      // Update count based on simultaneous read/write
       if (do_write && !do_read)      meta_count <= meta_count + 1'b1;
       else if (!do_write && do_read) meta_count <= meta_count - 1'b1;
     end
   end
 
-  // DONT FORGET TO MAP THE DATA OUT TO THE LINK!
-  always_ff @(posedge link.clk or negedge link.rst_n) begin
-    if (!link.rst_n) begin
+  always_ff @(posedge link.clk) begin
+    if (!rst_n_reg) begin
       link.tok_req.symbol_id <= 16'd0;
       link.tok_req.strat_id  <= 16'd0;
     end else begin
@@ -157,63 +178,26 @@ module algo_top (
     end
   end
 
-  // ----------------------------------------------------------------
-  // OUTPUT ISOLATION BUFFERS
-  // ----------------------------------------------------------------
-  // Internal wires from the FSM
-  logic                          fsm_ord_valid;
-  hft_types_pkg::order_intent_t  fsm_ord;
-  logic                          fsm_tok_req_valid;
-  logic                          fsm_tok_resp_ready;
-
-  // Registered outputs to break the combinational loop back to the IO pins
-  (* preserve *) logic                          ord_valid_out;
-  (* preserve *) hft_types_pkg::order_intent_t  ord_out;
-  (* preserve *) logic                          tok_req_valid_out;
-  (* preserve *) logic                          tok_resp_ready_out;
-
-  always_ff @(posedge link.clk or negedge link.rst_n) begin
-    if (!link.rst_n) begin
-      ord_valid_out      <= 1'b0;
-      ord_out            <= '0;
-      tok_req_valid_out  <= 1'b0;
-      tok_resp_ready_out <= 1'b0;
-    end else begin
-      ord_valid_out      <= fsm_ord_valid;
-      ord_out            <= fsm_ord;
-      tok_req_valid_out  <= fsm_tok_req_valid;
-      tok_resp_ready_out <= fsm_tok_resp_ready;
-    end
-  end
-
-  // Map the registered outputs to the external interface
-  assign link.ord_valid      = ord_valid_out;
-  assign link.ord            = ord_out;
-  assign link.tok_req_valid  = tok_req_valid_out;
-  assign link.tok_resp_ready = tok_resp_ready_out;
-
-  // Order FSM
   order_fsm u_fsm (
     .clk(link.clk),
-    .rst_n(link.rst_n),
+    .rst_n(rst_n_reg),   // Intercepted Reset
 
     .sig_valid(sig_fire),
-    .sig_ready(sig_ready),
+    .sig_ready(fsm_sig_ready), 
     .sig_side(sig_side_reg),
     .sig_price(sig_price_int_reg),
     .sig_qty(sig_qty_reg),
 
-    // Connect FSM outputs to our internal wires, NOT the external link
-    .tok_req_valid(fsm_tok_req_valid),
-    .tok_req_ready(link.tok_req_ready),
+    .tok_req_valid(link.tok_req_valid),
+    .tok_req_ready(tok_req_ready_reg),  // Intercepted tok_req_ready!
 
     .tok_resp_valid(link.tok_resp_valid),
-    .tok_resp_ready(fsm_tok_resp_ready),
+    .tok_resp_ready(link.tok_resp_ready),
     .tok_resp_id(link.tok_resp.token_id),
 
-    .ord_valid(fsm_ord_valid),
+    .ord_valid(link.ord_valid),
     .ord_ready(link.ord_ready),
-    .ord      (fsm_ord),
+    .ord      (link.ord),
 
     .rpt_valid(link.rpt_valid),
     .rpt_ready(link.rpt_ready),
