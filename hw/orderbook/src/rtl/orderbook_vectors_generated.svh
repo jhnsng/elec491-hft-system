@@ -2,7 +2,7 @@
 // Source sheet: F001_Warmup (sheet index 1)
 // Each entry corresponds to one parsed Excel row.
 
-localparam int ORDERBOOK_VECTOR_COUNT1 = 57;
+localparam int ORDERBOOK_VECTOR_COUNT1 = 58;
 typedef struct packed {
     logic               side;
     logic [31:0]        price;
