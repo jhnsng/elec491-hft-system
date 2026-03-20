@@ -19,8 +19,17 @@ module orderbook_top (
     output logic [6:0]  HEX2,
     output logic [6:0]  HEX3,
     output logic [6:0]  HEX4,
-    output logic [6:0]  HEX5
+    output logic [6:0]  HEX5,
+
+    // Debug Virtual Pins for Algorithm I/O (Visible in SignalTap)
+    output logic        debug_tok_req_valid,
+    output logic        debug_ord_valid,
+    output logic [1:0]  debug_ord_action,
+    output logic        debug_ord_side,
+    output logic [31:0] debug_ord_price,
+    output logic [31:0] debug_ord_qty
 );
+
 
     // Single clock/reset domain (50MHz)
     logic rst_n_sync;
@@ -35,12 +44,12 @@ module orderbook_top (
     // Divided test-controller clock (200x slower edge rate than 50MHz).
     logic test_clk_div;
 
-    // Orderbook outputs
-    logic [31:0] best_bid_price;
-    logic [31:0] best_bid_qty;
-    logic [31:0] best_ask_price;
-    logic [31:0] best_ask_qty;
-    logic        best_valid;
+    // Orderbook outputs (Kept for SignalTap visibility)
+    (* keep = 1 *) logic [31:0] best_bid_price;
+    (* keep = 1 *) logic [31:0] best_bid_qty;
+    (* keep = 1 *) logic [31:0] best_ask_price;
+    (* keep = 1 *) logic [31:0] best_ask_qty;
+    (* keep = 1 *) logic        best_valid;
 
     clock_divider #(
         .DIVIDE(200)
@@ -83,41 +92,48 @@ module orderbook_top (
     );
 
     algorithm u_algorithm (
-        .clk             (CLOCK_50),
-        .rst_n           (rst_n_sync),
+        .clk                (CLOCK_50),
+        .rst_n              (rst_n_sync),
 
-        .l1_valid       (best_valid),
-        .l1_ready       (),
-        .l1_symbol_id   (16'd0),
-        .l1_ts_ns       (32'd0),
-        .bb_p           (best_bid_price),
-        .bb_q           (best_bid_qty),
-        .ba_p           (best_ask_price),
-        .ba_q           (best_ask_qty),
+        // L1 Inputs from orderbook
+        .l1_valid           (best_valid),
+        .l1_ready           (),                 // Ignored by orderbook
+        .l1_symbol_id       (16'd1),            // Hardcoded to AAPL ID
+        .l1_ts_ns           (64'd0),            
+        .bb_p               (best_bid_price),
+        .bb_q               (best_bid_qty),
+        .ba_p               (best_ask_price),
+        .ba_q               (best_ask_qty),
 
-        .tok_req_valid  (),
-        .tok_req_ready  (),
-        .tok_req_symbol_id (),
+        // Token Request Handshake
+        .tok_req_valid      (debug_tok_req_valid),
+        .tok_req_ready      (1'b1),             // MUST BE 1 to prevent FSM stall
+        .tok_req_symbol_id  (),
+        .tok_req_strat_id   (),
 
-        .tok_resp_valid (),
-        .tok_resp_ready (),
-        .tok_resp_symbol_id (),
+        // Token Response (Simulated Exchange)
+        .tok_resp_valid     (1'b0),             
+        .tok_resp_ready     (),
+        .tok_resp_symbol_id (16'd0),
+        .tok_resp_token_id  (32'd0),
 
-        .ord_valid (),
-        .ord_ready (),
-        .ord_symbol_id (),
-        .ord_action (),
-        .ord_side (),
-        .ord_price_int (),
-        .ord_qty (),
-        .ord_token_id (),
+        // Order Intent Handshake (Tied to Debug Virtual Pins)
+        .ord_valid          (debug_ord_valid),
+        .ord_ready          (1'b1),             // MUST BE 1 to prevent FSM stall
+        .ord_symbol_id      (),
+        .ord_action         (debug_ord_action),
+        .ord_side           (debug_ord_side),
+        .ord_price_int      (debug_ord_price),
+        .ord_qty            (debug_ord_qty),
+        .ord_token_id       (),
         
-        .rpt_valid (),
-        .rpt_ready (),
-        .rpt_symbol_id (),
-        .rpt_token_id (),
-        .rpt_kind (),
-        .rpt_filled_total ()
+        // Order Report Feedback
+        .rpt_valid          (1'b0),
+        .rpt_ready          (),
+        .rpt_symbol_id      (16'd0),
+        .rpt_token_id       (32'd0),
+        .rpt_kind           (2'b00),
+        .rpt_filled_total   (32'd0)
     );
 
     /* ================================
