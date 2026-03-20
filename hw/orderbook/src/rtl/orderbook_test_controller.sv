@@ -165,12 +165,6 @@ module orderbook_test_controller (
 
             case (current_state)
                 ST_IDLE_DEBUG: begin
-                    // Stream start only when SW[9] is high.
-                    if (stream_mode && key1_pressed && (get_vector_count(vector_sel) > 0)) begin
-                        stream_vector_sel <= vector_sel;
-                        stream_msg_index <= 0;
-                    end
-
                     // Debug stepping only when SW[9] is low.
                     if (!stream_mode) begin
                         if (sw_sel_changed) begin
@@ -189,8 +183,8 @@ module orderbook_test_controller (
 
                 ST_STREAMING: begin
                     // Stream using latched selection captured at stream start.
-                    if (stream_msg_index < get_vector_count(stream_vector_sel)) begin
-                        get_vector_fields(stream_vector_sel, stream_msg_index, side_out, price_out, delta_qty_out);
+                    if (stream_msg_index < get_vector_count(vector_sel)) begin
+                        get_vector_fields(vector_sel, stream_msg_index, side_out, price_out, delta_qty_out);
                         valid_emit <= 1'b1;
                         stream_msg_index <= stream_msg_index + 1;
                     end

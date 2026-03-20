@@ -32,6 +32,9 @@ module orderbook_top (
     logic [31:0] test_qty;
     logic        test_valid;
 
+    // Divided test-controller clock (200x slower edge rate than 50MHz).
+    logic test_clk_div;
+
     // Orderbook outputs
     logic [31:0] best_bid_price;
     logic [31:0] best_bid_qty;
@@ -39,11 +42,19 @@ module orderbook_top (
     logic [31:0] best_ask_qty;
     logic        best_valid;
 
+    clock_divider #(
+        .DIVIDE(200)
+    ) u_test_ctrl_div (
+        .clk         (CLOCK_50),
+        .reset_n     (rst_n_sync),
+        .clk_div     (test_clk_div)
+    );
+
     /* ================================
-        Test Controller (50MHz domain)
+        Test Controller (divided-clock domain)
         ================================ */
     orderbook_test_controller u_test_ctrl (
-        .clk            (CLOCK_50),
+        .clk            (test_clk_div),
         .reset_n        (rst_n_sync),
         .SW             (SW),
         .KEY            (KEY),
