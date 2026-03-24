@@ -59,52 +59,49 @@ module orderbook_test_controller (
     logic [6:0] stream_vector_sel;
 
     function automatic int get_vector_count(input logic [6:0] seq_sel);
-        case (seq_sel)
-            // Use array sizes so playback stays correct even if generated
-            // count constants are off by one.
-            7'd1: get_vector_count = $size(ORDERBOOK_VECTORS1);
-            7'd2: get_vector_count = $size(ORDERBOOK_VECTORS2);
-            7'd3: get_vector_count = $size(ORDERBOOK_VECTORS3);
-            default: get_vector_count = 0;
-        endcase
+    case (seq_sel)
+        7'd1:  get_vector_count = $size(ORDERBOOK_VECTORS1);
+        7'd2:  get_vector_count = $size(ORDERBOOK_VECTORS2);
+        7'd3:  get_vector_count = $size(ORDERBOOK_VECTORS3);
+        7'd4:  get_vector_count = $size(ORDERBOOK_VECTORS4);
+        7'd5:  get_vector_count = $size(ORDERBOOK_VECTORS5);
+        7'd6:  get_vector_count = $size(ORDERBOOK_VECTORS6);
+        7'd7:  get_vector_count = $size(ORDERBOOK_VECTORS7);
+        7'd8:  get_vector_count = $size(ORDERBOOK_VECTORS8);
+        7'd9:  get_vector_count = $size(ORDERBOOK_VECTORS9);
+        7'd10: get_vector_count = $size(ORDERBOOK_VECTORS10);
+        default: get_vector_count = 0;
+    endcase
     endfunction
 
     task automatic get_vector_fields(
-        input  logic [6:0] seq_sel,
-        input  integer idx,
-        output logic side,
-        output logic [31:0] price,
-        output logic [31:0] delta_qty
+    input  logic [6:0] seq_sel,
+    input  integer idx,
+    output logic side,
+    output logic [31:0] price,
+    output logic [31:0] delta_qty
     );
         begin
-            side = 1'b0;
-            price = 32'd0;
+            side      = 1'b0;
+            price     = 32'd0;
             delta_qty = 32'd0;
             case (seq_sel)
-                7'd1: begin
-                    side = ORDERBOOK_VECTORS1[idx].side;
-                    price = ORDERBOOK_VECTORS1[idx].price;
-                    delta_qty = ORDERBOOK_VECTORS1[idx].delta_qty;
-                end
-                7'd2: begin
-                    side = ORDERBOOK_VECTORS2[idx].side;
-                    price = ORDERBOOK_VECTORS2[idx].price;
-                    delta_qty = ORDERBOOK_VECTORS2[idx].delta_qty;
-                end
-                7'd3: begin
-                    side = ORDERBOOK_VECTORS3[idx].side;
-                    price = ORDERBOOK_VECTORS3[idx].price;
-                    delta_qty = ORDERBOOK_VECTORS3[idx].delta_qty;
-                end
-                default: begin
-                    side = 1'b0;
-                    price = 32'd0;
-                    delta_qty = 32'd0;
-                end
+                7'd1:  begin side = ORDERBOOK_VECTORS1[idx].side;  price = ORDERBOOK_VECTORS1[idx].price;  delta_qty = ORDERBOOK_VECTORS1[idx].delta_qty;  end
+                7'd2:  begin side = ORDERBOOK_VECTORS2[idx].side;  price = ORDERBOOK_VECTORS2[idx].price;  delta_qty = ORDERBOOK_VECTORS2[idx].delta_qty;  end
+                7'd3:  begin side = ORDERBOOK_VECTORS3[idx].side;  price = ORDERBOOK_VECTORS3[idx].price;  delta_qty = ORDERBOOK_VECTORS3[idx].delta_qty;  end
+                7'd4:  begin side = ORDERBOOK_VECTORS4[idx].side;  price = ORDERBOOK_VECTORS4[idx].price;  delta_qty = ORDERBOOK_VECTORS4[idx].delta_qty;  end
+                7'd5:  begin side = ORDERBOOK_VECTORS5[idx].side;  price = ORDERBOOK_VECTORS5[idx].price;  delta_qty = ORDERBOOK_VECTORS5[idx].delta_qty;  end
+                7'd6:  begin side = ORDERBOOK_VECTORS6[idx].side;  price = ORDERBOOK_VECTORS6[idx].price;  delta_qty = ORDERBOOK_VECTORS6[idx].delta_qty;  end
+                7'd7:  begin side = ORDERBOOK_VECTORS7[idx].side;  price = ORDERBOOK_VECTORS7[idx].price;  delta_qty = ORDERBOOK_VECTORS7[idx].delta_qty;  end
+                7'd8:  begin side = ORDERBOOK_VECTORS8[idx].side;  price = ORDERBOOK_VECTORS8[idx].price;  delta_qty = ORDERBOOK_VECTORS8[idx].delta_qty;  end
+                7'd9:  begin side = ORDERBOOK_VECTORS9[idx].side;  price = ORDERBOOK_VECTORS9[idx].price;  delta_qty = ORDERBOOK_VECTORS9[idx].delta_qty;  end
+                7'd10: begin side = ORDERBOOK_VECTORS10[idx].side; price = ORDERBOOK_VECTORS10[idx].price; delta_qty = ORDERBOOK_VECTORS10[idx].delta_qty; end
+                default: ;
             endcase
         end
     endtask
-    
+
+
     always_ff @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
             key1_prev <= 1'b1;
