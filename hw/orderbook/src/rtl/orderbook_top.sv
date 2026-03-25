@@ -52,12 +52,30 @@ module orderbook_top (
     (* keep = 1 *) logic        best_valid;
 
     clock_divider #(
-        .DIVIDE(200)
+        .DIVIDE(2500000) //200 -> 2500000
     ) u_test_ctrl_div (
         .clk         (CLOCK_50),
         .reset_n     (rst_n_sync),
         .clk_div     (test_clk_div)
     );
+
+    // =========================================================
+    // Edge Detector to fix CDC (Slow Clock -> Fast Clock)
+    // =========================================================
+    logic test_valid_q;
+    logic test_valid_pulse;
+
+    always_ff @(posedge CLOCK_50 or negedge rst_n_sync) begin
+        if (!rst_n_sync) begin
+            test_valid_q <= 1'b0;
+        end else begin
+            test_valid_q <= test_valid;
+        end
+    end
+
+    // Converts 50ms slow-clock HIGH into exactly ONE 20ns 50MHz pulse
+    assign test_valid_pulse = test_valid && !test_valid_q;
+
 
     /* ================================
         Test Controller (divided-clock domain)
@@ -77,19 +95,21 @@ module orderbook_top (
     /* ================================
         Orderbook Module (50MHz domain)
         ================================ */
+
     orderbook u_orderbook (
         .clk             (CLOCK_50),
         .rst_n           (rst_n_sync),
         .side_in         (side_t'(test_side)),
         .price_in        (test_price),
         .delta_qty_in    (test_qty),
-        .valid_in        (test_valid),
+        .valid_in        (test_valid_pulse), // <--- CHANGED FROM test_valid
         .best_bid_price  (best_bid_price),
         .best_bid_qty    (best_bid_qty),
         .best_ask_price  (best_ask_price),
         .best_ask_qty    (best_ask_qty),
         .best_valid      (best_valid)
     );
+
 
     algorithm u_algorithm (
         .clk                (CLOCK_50),
@@ -112,10 +132,11 @@ module orderbook_top (
         .tok_req_strat_id   (),
 
         // Token Response (Simulated Exchange)
-        .tok_resp_valid     (1'b0),             
+        .tok_resp_valid     (1'b1),             
         .tok_resp_ready     (),
         .tok_resp_symbol_id (16'd0),
-        .tok_resp_token_id  (32'd0),
+        .tok_resp_token_id  (32'hDEADBEEF),
+
 
         // Order Intent Handshake (Tied to Debug Virtual Pins)
         .ord_valid          (debug_ord_valid),
