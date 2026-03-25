@@ -1,4 +1,4 @@
-# Copilot instructions (capstone)
+# Copilot instructions (sw/exchange/)
 
 ## What this folder is
 - Replays a NASDAQ ITCH 5.0 binary file, filters messages by ticker, and forwards the raw ITCH messages over UDP.
@@ -12,6 +12,7 @@ Key files:
 - `src/orderbook.py`: in-memory limit order book + snapshot/logging helpers.
 - `src/ouch_server.py`: OUCH 5.0 paper trading TCP server + message parsers/builders.
 - `src/ouch_demo.py`: standalone OUCH demo client for testing paper trading.
+- `src/demo_breakpoints.yaml`: sample demo debugger breakpoints config.
 - `src/forwarder.yaml`: default runtime config (note: `itch_file` is an absolute path).
 - `docs/orderbook.md`: diagrams of the intended message/orderbook flow.
 - `tests/`: pytest unit tests for field extraction, orderbook behavior, and OUCH protocol.
@@ -54,10 +55,18 @@ Key files:
 - Run tests: `pytest` (configured by `pytest.ini`).
 - Run forwarder (recommended invocation because imports are flat files in `src/`):
   - `python src/data_forwarder.py --config src/forwarder.yaml --demo`
+  - Demo debugger with breakpoints YAML: `python src/data_forwarder.py --config src/forwarder.yaml --demo --demo-debugger --demo-breakpoints-config src/demo_breakpoints.yaml`
+  - Demo debugger with inline breakpoints: `python src/data_forwarder.py --config src/forwarder.yaml --demo --demo-debugger --demo-breakpoint 3 --demo-breakpoint 7`
   - Add orderbook + snapshots: `python src/data_forwarder.py --orderbook --orderbook-snapshot-path /tmp/orderbook.json`
   - Analytics export: `python src/data_forwarder.py --analytics --analytics-csv /tmp/order_ids.csv`
   - OUCH paper trading: `python src/data_forwarder.py --config src/forwarder.yaml --ouch`
   - OUCH demo client (after forwarder is running with --ouch): `python src/ouch_demo.py --symbol SPY`
+
+Demo debugger controls while paused:
+- `n`: step exactly one forwarded message, then pause again
+- `c`: continue until next breakpoint
+- `q`: stop forwarding and exit gracefully
+- `h` / `?`: show help
 
 ## Project-specific editing guidelines
 - If you change ITCH field offsets/extractors (e.g., `extract_order_id`, `extract_price_ticks`), update/extend `tests/test_extraction.py` with minimal bytearray payloads.

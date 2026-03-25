@@ -1,15 +1,22 @@
 """Tests for data_forwarder extraction functions."""
 import pytest
+import tempfile
 
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from data_forwarder import (
+    DemoDebugger,
+    DemoDebuggerNonInteractive,
+    _normalize_demo_breakpoints,
+    load_demo_breakpoints,
+    _parse_replay_settings,
     extract_order_id,
     extract_price_ticks,
     extract_side,
     extract_shares,
+    parse_itch_time_24h_to_ns,
 )
 
 
@@ -230,3 +237,132 @@ class TestExtractSharesLargeValues:
         
         result = extract_shares("A", memoryview(payload))
         assert result == 0
+
+
+class TestParseITCHTime24h:
+    """Tests for HH:MM:SS(.fraction) to ITCH ns conversion."""
+
+    def test_parse_whole_seconds(self):
+        assert parse_itch_time_24h_to_ns("00:00:01") == 1_000_000_000
+
+    def test_parse_microseconds(self):
+        assert parse_itch_time_24h_to_ns("09:30:00.123456") == 34_200_123_456_000
+
+    def test_parse_nanoseconds_precision(self):
+        assert parse_itch_time_24h_to_ns("12:34:56.123456789") == 45_296_123_456_789
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "24:00:00",
+            "09:60:00",
+            "09:30:60",
+            "09:30",
+            "bad",
+        ],
+    )
+    def test_parse_invalid_values(self, value):
+        with pytest.raises(ValueError):
+            parse_itch_time_24h_to_ns(value)
+
+
+class TestParseReplaySettings:
+    """Tests for replay YAML config parsing."""
+
+    def test_parse_replay_true(self):
+        settings = _parse_replay_settings(True)
+        assert settings is not None
+        assert settings.enabled is True
+        assert settings.start_timestamp_ns is None
+        assert settings.speed == 1.0
+        assert settings.prestart_burst is True
+
+    def test_parse_replay_start_time(self):
+        settings = _parse_replay_settings({
+            "enabled": True,
+            "start_time_24h": "09:30:00.000000",
+            "speed": 2.0,
+            "prestart_burst": True,
+        })
+        assert settings is not None
+        assert settings.enabled is True
+        assert settings.start_timestamp_ns == 34_200_000_000_000
+        assert settings.speed == 2.0
+        assert settings.prestart_burst is True
+
+    def test_parse_replay_mutually_exclusive_start_fields(self):
+        with pytest.raises(ValueError):
+            _parse_replay_settings(
+                {
+                    "start_timestamp": 123,
+                    "start_time_24h": "00:00:01",
+                }
+            )
+
+    def test_parse_replay_invalid_speed(self):
+        with pytest.raises(ValueError):
+            _parse_replay_settings({"speed": 0})
+
+
+class TestDemoBreakpoints:
+    """Tests for demo breakpoint parsing helpers."""
+
+    def test_normalize_demo_breakpoints_sorted_unique(self):
+        assert _normalize_demo_breakpoints([10, 2, 10, "5"]) == [2, 5, 10]
+
+    def test_normalize_demo_breakpoints_reject_non_positive(self):
+        with pytest.raises(ValueError):
+            _normalize_demo_breakpoints([0, 5])
+
+    def test_load_demo_breakpoints_mapping(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as handle:
+            handle.write("breakpoints:\n  - 8\n  - 3\n  - 8\n")
+            path = Path(handle.name)
+
+        try:
+            assert load_demo_breakpoints(path) == [3, 8]
+        finally:
+            path.unlink()
+
+    def test_load_demo_breakpoints_top_level_list(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as handle:
+            handle.write("- 4\n- 2\n")
+            path = Path(handle.name)
+
+        try:
+            assert load_demo_breakpoints(path) == [2, 4]
+        finally:
+            path.unlink()
+
+
+class TestDemoDebugger:
+    """Tests for demo debugger pause/step/continue controls."""
+
+    def test_breakpoint_continue_command(self):
+        commands = iter(["c"])
+        debugger = DemoDebugger([2], command_reader=lambda: next(commands), interactive=True)
+
+        assert debugger.on_forwarded(1) == "continue"
+        assert debugger.on_forwarded(2) == "continue"
+        assert debugger.stop_requested is False
+
+    def test_step_one_then_pause_again(self):
+        commands = iter(["n", "c"])
+        debugger = DemoDebugger([1], command_reader=lambda: next(commands), interactive=True)
+
+        assert debugger.on_forwarded(1) == "continue"  # pause at breakpoint, command=n
+        assert debugger.on_forwarded(2) == "continue"  # pause after one step, command=c
+        assert debugger.stop_requested is False
+
+    def test_quit_command_requests_stop(self):
+        commands = iter(["q"])
+        debugger = DemoDebugger([1], command_reader=lambda: next(commands), interactive=True)
+
+        assert debugger.on_forwarded(1) == "stop"
+        assert debugger.stop_requested is True
+
+    def test_non_interactive_breakpoint_raises(self):
+        debugger = DemoDebugger([1], command_reader=lambda: "c", interactive=False)
+
+        with pytest.raises(DemoDebuggerNonInteractive):
+            debugger.on_forwarded(1)

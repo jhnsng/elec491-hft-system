@@ -10,6 +10,7 @@ Thread-safety model:
 from __future__ import annotations
 
 import json
+import random
 import logging
 import threading
 import time
@@ -94,7 +95,12 @@ class OrderBook:
     that don't contain ticker fields.
     """
 
-    def __init__(self, max_orders: int = 5_000_000, snapshot_depth: int = 10):
+    def __init__(
+        self,
+        max_orders: int = 5_000_000,
+        snapshot_depth: int = 10,
+        placeholder_seed: int = 491,
+    ):
         """Initialize the order book.
 
         Args:
@@ -103,6 +109,8 @@ class OrderBook:
         """
         self._max_orders = max_orders
         self._snapshot_depth = snapshot_depth
+        self._placeholder_seed = int(placeholder_seed)
+        self._snapshot_sequence = 0
 
         # Primary index: order_id -> Order (pre-sized dict)
         self._orders: Dict[int, Order] = {}
@@ -110,8 +118,8 @@ class OrderBook:
         # Price level indices using SortedDict for O(log N) operations
         # Bids: highest price is best (use negative key for natural max-first iteration)
         # Asks: lowest price is best (natural min-first iteration)
-        self._bids: SortedDict[int, PriceLevel] = SortedDict()
-        self._asks: SortedDict[int, PriceLevel] = SortedDict()
+        self._bids: SortedDict = SortedDict()
+        self._asks: SortedDict = SortedDict()
 
         # Statistics
         self._adds = 0
@@ -124,6 +132,131 @@ class OrderBook:
         self._lock = threading.Lock()
         self._last_snapshot_time = 0.0
         self._last_timestamp_ns: Optional[int] = None
+        self._prev_mid_price_dollars: Optional[float] = None
+        self._hit_rate_state_pct: float = 62.0
+
+    def _build_ui_payload_unlocked(
+        self,
+        best_bid: Optional[int],
+        best_ask: Optional[int],
+        spread: Optional[int],
+    ) -> Dict:
+        """Build a UI-oriented payload with deterministic placeholders.
+
+        The generator is seed-based so dashboards can render stable sample data
+        while live fields are not yet populated.
+        """
+        self._snapshot_sequence += 1
+        rng = random.Random((self._placeholder_seed * 1_000_003) + self._snapshot_sequence)
+
+        # Real mid price if available, else deterministic placeholder.
+        mid_price_dollars: float
+        mid_price_placeholder = False
+        if best_bid is not None and best_ask is not None:
+            mid_price_dollars = (best_bid + best_ask) / 20000.0
+        else:
+            mid_price_dollars = rng.uniform(95.0, 205.0)
+            mid_price_placeholder = True
+
+        prev_mid = self._prev_mid_price_dollars
+        if prev_mid is None or prev_mid <= 0:
+            price_swing_bps = 0.0
+        else:
+            price_swing_bps = ((mid_price_dollars - prev_mid) / prev_mid) * 10_000.0
+        self._prev_mid_price_dollars = mid_price_dollars
+
+        spread_ticks = spread if spread is not None else rng.randint(1, 12)
+        spread_placeholder = spread is None
+
+        inventory_shares = rng.randint(-2500, 2500)
+        latency_us = round(rng.uniform(35.0, 220.0), 2)
+
+        # 60-point seeded PnL sparkline: small positive drift with occasional loss swings.
+        # Generates realistic P&L that averages small profit with volatile dips.
+        pnl_series: List[float] = []
+        pnl_value = rng.uniform(50.0, 150.0)  # Start modestly positive
+        for i in range(60):
+            # 90% of the time: small profitable steps (-15 to +25, biased up)
+            if rng.random() < 0.90:
+                step = rng.uniform(-15.0, 25.0)
+            else:
+                # 10% of the time: moderate loss swings for realism
+                step = rng.uniform(-100.0, -30.0)
+            pnl_value += step
+            pnl_series.append(round(pnl_value, 2))
+
+        # Placeholder execution quality metrics: hit vs expired/cancelled.
+        # Hit-rate deviations are linked to price swings/volatility so the
+        # over-time chart shows stress periods during sharp moves.
+        orders_placed = rng.randint(900, 1600)
+        swing_penalty = min(abs(price_swing_bps) * 0.05, 5.5)
+        spread_penalty = max(spread_ticks - 4, 0) * 0.12
+        mean_revert = (61.0 - self._hit_rate_state_pct) * 0.18
+        # Stronger base noise so hit-rate movement is visibly jagged.
+        noise = rng.uniform(-5.5, 5.5)
+
+        abs_swing_bps = abs(price_swing_bps)
+        if abs_swing_bps >= 25.0:
+            # During sharp moves, fills can collapse as quotes get stale.
+            # Force a visible "tank" into 30-40% for demo realism.
+            stressed = rng.uniform(30.0, 40.0) + rng.uniform(-4.0, 4.0)
+            self._hit_rate_state_pct = min(max(stressed, 24.0), 48.0)
+        else:
+            shock = 0.0
+            if abs_swing_bps > 12.0 and rng.random() < 0.45:
+                shock = rng.uniform(-8.0, -1.5)
+            elif abs_swing_bps < 8.0:
+                shock = rng.uniform(0.5, 2.2)
+
+            self._hit_rate_state_pct += mean_revert + noise + shock - swing_penalty - spread_penalty
+
+            # Softly compress the high end to avoid a hard visual cutoff.
+            if self._hit_rate_state_pct > 62.0:
+                excess = self._hit_rate_state_pct - 62.0
+                self._hit_rate_state_pct = 62.0 + (excess * 0.35)
+
+            self._hit_rate_state_pct = min(max(self._hit_rate_state_pct, 22.0), 78.0)
+        hit_rate_pct = self._hit_rate_state_pct
+        orders_hit = int(round(orders_placed * (hit_rate_pct / 100.0)))
+        orders_expired_cancelled = max(orders_placed - orders_hit, 0)
+
+        placeholders: Dict[str, int | float] = {}
+        if best_bid is None:
+            placeholders["best_bid_ticks"] = rng.randint(950000, 2050000)
+        if best_ask is None:
+            bid_placeholder = placeholders.get("best_bid_ticks")
+            if isinstance(bid_placeholder, int):
+                bid_fallback = bid_placeholder
+            else:
+                bid_fallback = best_bid if best_bid is not None else 1000000
+            placeholders["best_ask_ticks"] = bid_fallback + rng.randint(1, 20)
+        if mid_price_placeholder:
+            placeholders["mid_price_dollars"] = round(mid_price_dollars, 4)
+        if spread_placeholder:
+            placeholders["spread_ticks"] = spread_ticks
+
+        return {
+            "seed": self._placeholder_seed,
+            "snapshot_sequence": self._snapshot_sequence,
+            "mid_price_dollars": round(mid_price_dollars, 4),
+            "spread_ticks": spread_ticks,
+            "inventory_shares": inventory_shares,
+            "latency_us": latency_us,
+            "pnl_live": {
+                "is_placeholder": True,
+                "series": pnl_series,
+                "current": pnl_series[-1] if pnl_series else 0.0,
+            },
+            "execution_quality": {
+                "is_placeholder": True,
+                "orders_placed": orders_placed,
+                "orders_hit": orders_hit,
+                "orders_expired_cancelled": orders_expired_cancelled,
+                "hit_rate_pct": round((orders_hit / max(orders_placed, 1)) * 100.0, 2),
+                "price_swing_bps": round(price_swing_bps, 2),
+            },
+            "placeholders": placeholders,
+        }
 
     # -------------------------------------------------------------------------
     # Ticker resolution (for D/E/X messages that lack ticker field)
@@ -391,6 +524,7 @@ class OrderBook:
                 spread = best_ask - best_bid
 
             depth = self._get_depth_unlocked(self._snapshot_depth)
+            ui_payload = self._build_ui_payload_unlocked(best_bid, best_ask, spread)
 
             return {
                 "timestamp": time.time(),
@@ -414,6 +548,7 @@ class OrderBook:
                     "executes": self._executes,
                     "unknown_order_ids": self._unknown_order_ids,
                 },
+                "ui": ui_payload,
             }
 
     # -------------------------------------------------------------------------

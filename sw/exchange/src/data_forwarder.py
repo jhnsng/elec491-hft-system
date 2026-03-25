@@ -3,14 +3,16 @@ from __future__ import annotations
 import argparse
 import io
 import logging
+import re
 import statistics
+import sys
 import threading
 import time
 from collections import Counter, deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Deque, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Deque, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple, cast
 
 # Standard library for networking
 import socket
@@ -54,12 +56,22 @@ class ReaderSettings:
 
 
 @dataclass(frozen=True)
+class ReplaySettings:
+	"""Configuration for timestamp-driven replay pacing."""
+	enabled: bool = False
+	start_timestamp_ns: Optional[int] = None
+	speed: float = 1.0
+	prestart_burst: bool = True
+
+
+@dataclass(frozen=True)
 class OrderBookSettings:
 	"""Configuration for the internal order book."""
 	max_orders: int = 5_000_000  # Pre-allocation size for order storage
 	snapshot_interval_s: float = 5.0  # Seconds between periodic snapshots
 	snapshot_depth: int = 10  # Number of price levels per side in snapshots
 	snapshot_path: Optional[Path] = None  # Path for snapshot output (None = no file output)
+	placeholder_seed: int = 491  # Seed used for deterministic placeholder UI fields
 
 
 @dataclass(frozen=True)
@@ -68,6 +80,7 @@ class ForwarderConfig:
 	tickers: Set[str]
 	udp: UDPSettings
 	reader: ReaderSettings
+	replay: Optional[ReplaySettings] = None
 	orderbook: Optional[OrderBookSettings] = None
 	ouch: Optional[OUCHSettings] = None
 
@@ -100,6 +113,7 @@ def load_config(path: Path) -> ForwarderConfig:
 
 	udp_cfg = _parse_udp_settings(raw.get("udp", {}))
 	reader_cfg = _parse_reader_settings(raw.get("reader", {}))
+	replay_cfg = _parse_replay_settings(raw.get("replay"))
 	orderbook_cfg = _parse_orderbook_settings(raw.get("orderbook"))
 	ouch_cfg = _parse_ouch_settings(raw.get("ouch"))
 
@@ -108,6 +122,7 @@ def load_config(path: Path) -> ForwarderConfig:
 		tickers=tickers,
 		udp=udp_cfg,
 		reader=reader_cfg,
+		replay=replay_cfg,
 		orderbook=orderbook_cfg,
 		ouch=ouch_cfg,
 	)
@@ -166,6 +181,77 @@ def _parse_reader_settings(raw: object) -> ReaderSettings:
 	)
 
 
+_TIME_24H_RE = re.compile(r"^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?$")
+
+
+def parse_itch_time_24h_to_ns(value: str) -> int:
+	"""Parse HH:MM:SS(.fraction) to ITCH nanoseconds since midnight.
+
+	Fractional precision supports 1 to 9 digits and is interpreted as seconds
+	fraction (for example, ".5" means 500ms).
+	"""
+	match = _TIME_24H_RE.fullmatch(value.strip())
+	if match is None:
+		raise ValueError(
+			"Invalid time format. Expected HH:MM:SS or HH:MM:SS.fffffffff"
+		)
+
+	hours = int(match.group(1))
+	minutes = int(match.group(2))
+	seconds = int(match.group(3))
+	frac = match.group(4) or ""
+
+	if hours > 23:
+		raise ValueError("Hour must be in range 00-23")
+	if minutes > 59:
+		raise ValueError("Minute must be in range 00-59")
+	if seconds > 59:
+		raise ValueError("Second must be in range 00-59")
+
+	frac_ns = int(frac.ljust(9, "0")) if frac else 0
+	return ((hours * 3600 + minutes * 60 + seconds) * 1_000_000_000) + frac_ns
+
+
+def _parse_replay_settings(raw: object) -> Optional[ReplaySettings]:
+	"""Parse replay configuration from YAML."""
+	if raw is None or raw is False:
+		return None
+
+	if raw is True:
+		return ReplaySettings(enabled=True)
+
+	if not isinstance(raw, dict):
+		raise ValueError("`replay` must be a mapping, boolean, or omitted")
+
+	enabled = bool(raw.get("enabled", True))
+	start_timestamp_raw = raw.get("start_timestamp")
+	start_time_24h_raw = raw.get("start_time_24h")
+
+	if start_timestamp_raw is not None and start_time_24h_raw is not None:
+		raise ValueError("replay.start_timestamp and replay.start_time_24h are mutually exclusive")
+
+	start_timestamp_ns: Optional[int] = None
+	if start_timestamp_raw is not None:
+		start_timestamp_ns = int(start_timestamp_raw)
+		if start_timestamp_ns < 0:
+			raise ValueError("replay.start_timestamp must be >= 0")
+	elif start_time_24h_raw is not None:
+		start_timestamp_ns = parse_itch_time_24h_to_ns(str(start_time_24h_raw))
+
+	speed = float(raw.get("speed", 1.0))
+	if speed <= 0:
+		raise ValueError("replay.speed must be > 0")
+
+	prestart_burst = bool(raw.get("prestart_burst", True))
+
+	return ReplaySettings(
+		enabled=enabled,
+		start_timestamp_ns=start_timestamp_ns,
+		speed=speed,
+		prestart_burst=prestart_burst,
+	)
+
+
 def _parse_orderbook_settings(raw: object) -> Optional[OrderBookSettings]:
 	"""Parse orderbook configuration from YAML.
 
@@ -199,12 +285,14 @@ def _parse_orderbook_settings(raw: object) -> Optional[OrderBookSettings]:
 
 	snapshot_path_raw = raw.get("snapshot_path")
 	snapshot_path = Path(snapshot_path_raw) if snapshot_path_raw else None
+	placeholder_seed = int(raw.get("placeholder_seed", 491))
 
 	return OrderBookSettings(
 		max_orders=max_orders,
 		snapshot_interval_s=snapshot_interval_s,
 		snapshot_depth=snapshot_depth,
 		snapshot_path=snapshot_path,
+		placeholder_seed=placeholder_seed,
 	)
 
 
@@ -231,6 +319,143 @@ def _parse_ouch_settings(raw: object) -> Optional[OUCHSettings]:
 	enabled = bool(raw.get("enabled", False))
 
 	return OUCHSettings(host=host, port=port, enabled=enabled)
+
+
+def _normalize_demo_breakpoints(items: Sequence[object]) -> List[int]:
+	"""Normalize breakpoint message numbers to sorted unique positive ints."""
+	breakpoints: List[int] = []
+	for item in items:
+		if isinstance(item, bool):
+			raise ValueError(f"Invalid breakpoint value: {item!r}")
+		if isinstance(item, int):
+			value = item
+		elif isinstance(item, str):
+			try:
+				value = int(item)
+			except ValueError as exc:
+				raise ValueError(f"Invalid breakpoint value: {item!r}") from exc
+		else:
+			raise ValueError(f"Invalid breakpoint value: {item!r}")
+		if value <= 0:
+			raise ValueError(f"Breakpoint must be > 0, got: {value}")
+		breakpoints.append(value)
+	return sorted(set(breakpoints))
+
+
+def load_demo_breakpoints(path: Path) -> List[int]:
+	"""Load demo breakpoints from YAML.
+
+	Supported formats:
+	- Top-level list: [10, 20, 50]
+	- Mapping: {breakpoints: [10, 20, 50]}
+	"""
+	if not path.exists():
+		raise FileNotFoundError(f"Demo breakpoint config not found: {path}")
+
+	with path.open("r", encoding="utf-8") as handle:
+		raw = yaml.safe_load(handle)
+
+	if raw is None:
+		return []
+	if isinstance(raw, list):
+		return _normalize_demo_breakpoints(raw)
+	if isinstance(raw, dict):
+		breakpoints = raw.get("breakpoints", [])
+		if not isinstance(breakpoints, list):
+			raise ValueError("demo breakpoints config: `breakpoints` must be a list")
+		return _normalize_demo_breakpoints(breakpoints)
+
+	raise ValueError("demo breakpoints config must be a list or a mapping")
+
+
+class DemoDebuggerNonInteractive(RuntimeError):
+	"""Raised when debugger pause is requested but stdin is not interactive."""
+
+
+class DemoDebugger:
+	"""Simple message-level debugger for demo mode.
+
+	Breakpoints are one-shot and based on forwarded message index.
+	"""
+
+	def __init__(
+		self,
+		breakpoints: Sequence[int],
+		*,
+		command_reader: Optional[Callable[[], str]] = None,
+		interactive: Optional[bool] = None,
+	):
+		self._breakpoints = _normalize_demo_breakpoints(breakpoints)
+		self._next_breakpoint_idx = 0
+		self._step_remaining = 0
+		self._stop_requested = False
+		self._interactive = sys.stdin.isatty() if interactive is None else interactive
+		self._command_reader = command_reader
+
+	@property
+	def breakpoints(self) -> Sequence[int]:
+		return self._breakpoints
+
+	@property
+	def stop_requested(self) -> bool:
+		return self._stop_requested
+
+	def on_forwarded(self, forwarded_count: int) -> str:
+		"""Handle post-forward hook and return `continue` or `stop`."""
+		if self._stop_requested:
+			return "stop"
+
+		pause_reason: Optional[str] = None
+
+		if self._step_remaining > 0:
+			self._step_remaining -= 1
+			if self._step_remaining == 0:
+				pause_reason = f"step complete at message {forwarded_count}"
+
+		if (
+			self._next_breakpoint_idx < len(self._breakpoints)
+			and forwarded_count == self._breakpoints[self._next_breakpoint_idx]
+		):
+			self._next_breakpoint_idx += 1
+			if pause_reason is None:
+				pause_reason = f"breakpoint hit at message {forwarded_count}"
+
+		if pause_reason is None:
+			return "continue"
+
+		return self._pause(pause_reason)
+
+	def _pause(self, reason: str) -> str:
+		LOGGER.warning("Demo debugger paused: %s", reason)
+		if not self._interactive:
+			raise DemoDebuggerNonInteractive(
+				"Demo debugger paused but stdin is not interactive; exiting. "
+				"Run in a TTY or disable --demo-debugger."
+			)
+
+		while True:
+			command = self._read_command().strip().lower()
+			if command in {"h", "?", ""}:
+				LOGGER.info("Demo debugger commands: n=step one, c=continue, q=quit, h=help")
+				continue
+			if command == "n":
+				self._step_remaining = 1
+				return "continue"
+			if command == "c":
+				return "continue"
+			if command == "q":
+				self._stop_requested = True
+				return "stop"
+			LOGGER.warning("Unknown demo debugger command: %r", command)
+
+	def _read_command(self) -> str:
+		if self._command_reader is not None:
+			return self._command_reader()
+		try:
+			return input("(demo-debug) command [n/c/q/h]: ")
+		except EOFError:
+			self._stop_requested = True
+			return "q"
 
 
 
@@ -455,7 +680,7 @@ class ITCHStream:
 		chunk = bytearray(self.chunk_size)
 
 		with self.file_path.open("rb", buffering=0) as handle:
-			reader: io.BufferedIOBase = handle  # RawIOBase supporting readinto
+			reader: io.RawIOBase = handle  # RawIOBase supporting readinto
 			while True:
 				read = reader.readinto(chunk)
 				if not read:
@@ -764,7 +989,8 @@ class OrderIDAnalytics:
 		logger.info("ID range: %s", summary["id_range"])
 		logger.info("-" * 80)
 		logger.info("By message type:")
-		for msg_type, stats in summary["by_message_type"].items():
+		by_message_type = cast(Dict[str, Dict[str, Any]], summary["by_message_type"])
+		for msg_type, stats in by_message_type.items():
 			logger.info(
 				"  Type %s: count=%s unique=%s min=%s max=%s",
 				msg_type,
@@ -773,7 +999,7 @@ class OrderIDAnalytics:
 				stats["min"],
 				stats["max"],
 			)
-		price_summary = summary.get("price", {})
+		price_summary = cast(Dict[str, Any], summary.get("price", {}))
 		if price_summary.get("total_prices", 0) > 0:
 			logger.info("-" * 80)
 			logger.info(
@@ -953,6 +1179,7 @@ def forward(
 	max_messages: Optional[int] = None,
 	demo_mode: bool = False,
 	demo_delay: Optional[float] = None,
+	demo_debugger: Optional[DemoDebugger] = None,
 	benchmark_mode: bool = False,
 	analytics_mode: bool = False,
 	analytics_csv: Optional[Path] = None,
@@ -960,6 +1187,10 @@ def forward(
 	orderbook_snapshot_path: Optional[Path] = None,
 	orderbook_snapshot_interval: float = 5.0,
 	ouch_enabled: bool = False,
+	replay_enabled: bool = False,
+	replay_start_timestamp_ns: Optional[int] = None,
+	replay_speed: float = 1.0,
+	replay_prestart_burst: bool = True,
 ) -> None:
 	# Initialize orderbook if enabled (must be created before TickerFilter)
 	orderbook: Optional[OrderBook] = None
@@ -968,6 +1199,7 @@ def forward(
 		orderbook = OrderBook(
 			max_orders=ob_settings.max_orders,
 			snapshot_depth=ob_settings.snapshot_depth,
+			placeholder_seed=ob_settings.placeholder_seed,
 		)
 		LOGGER.info(
 			"Orderbook initialized: max_orders=%s snapshot_depth=%s",
@@ -1006,6 +1238,10 @@ def forward(
 	last_snapshot = time.monotonic()
 	start_time = last_stats
 	last_sent_ts_ns: Optional[int] = None
+	replay_anchor_ts_ns: Optional[int] = None
+	replay_anchor_monotonic_s: Optional[float] = None
+	missing_ts_warned = False
+	backward_ts_warned = False
 
 	try:
 		for message in reader:
@@ -1023,6 +1259,11 @@ def forward(
 				ts_ns = extract_itch_timestamp(message)
 
 				if all(v is not None for v in (order_id, ticker, side, shares, price)):
+					assert order_id is not None
+					assert ticker is not None
+					assert side is not None
+					assert shares is not None
+					assert price is not None
 					# Only add to orderbook if ticker is in our filter set
 					if ticker in ticker_filter.tickers:
 						orderbook.add_order(
@@ -1035,10 +1276,49 @@ def forward(
 						)
 
 			if ticker_filter.should_forward(message):
+				ts_ns = extract_itch_timestamp(message)
+
+				if replay_enabled and demo_debugger is None:
+					if ts_ns is None:
+						if not missing_ts_warned:
+							LOGGER.info(
+								"Replay pacing: some forwarded messages have no extractable ITCH timestamp; forwarding those immediately"
+							)
+							missing_ts_warned = True
+					elif (
+						replay_prestart_burst
+						and replay_start_timestamp_ns is not None
+						and replay_anchor_ts_ns is None
+						and ts_ns < replay_start_timestamp_ns
+					):
+						pass
+					else:
+						if replay_anchor_ts_ns is None:
+							replay_anchor_ts_ns = ts_ns
+							replay_anchor_monotonic_s = time.monotonic()
+							LOGGER.info(
+								"Replay pacing anchor set at ITCH timestamp=%s (%s)",
+								replay_anchor_ts_ns,
+								format_itch_timestamp(replay_anchor_ts_ns),
+							)
+						else:
+							assert replay_anchor_monotonic_s is not None
+							delta_ts_ns = ts_ns - replay_anchor_ts_ns
+							if delta_ts_ns < 0:
+								if not backward_ts_warned:
+									LOGGER.warning(
+										"Replay pacing observed non-monotonic ITCH timestamp; clamping negative delay to 0"
+									)
+									backward_ts_warned = True
+								delta_ts_ns = 0
+							target_monotonic_s = replay_anchor_monotonic_s + (delta_ts_ns / 1e9) / replay_speed
+							sleep_s = target_monotonic_s - time.monotonic()
+							if sleep_s > 0:
+								time.sleep(sleep_s)
+
 				# Update orderbook for D/E/X messages (order already exists from Add)
 				if orderbook_mode and orderbook and msg_type in ("X", "D", "E"):
 					order_id = extract_order_id(msg_type, message.payload)
-					ts_ns = extract_itch_timestamp(message)
 					if order_id is not None:
 						if msg_type == "X":  # Cancel
 							shares = extract_shares(msg_type, message.payload)
@@ -1060,7 +1340,6 @@ def forward(
 				forwarded_bytes += len(message.raw)
 				
 				# Track last sent ITCH timestamp for live stats
-				ts_ns = extract_itch_timestamp(message)
 				if ts_ns is not None:
 					last_sent_ts_ns = ts_ns
 				
@@ -1075,8 +1354,18 @@ def forward(
 				
 				if demo_mode:
 					_log_demo_message(forwarded, message)
-					if demo_delay is not None:
+					if demo_delay is not None and not replay_enabled and demo_debugger is None:
 						time.sleep(demo_delay)
+
+				if demo_debugger is not None:
+					try:
+						action = demo_debugger.on_forwarded(forwarded)
+					except DemoDebuggerNonInteractive as exc:
+						LOGGER.error("%s", exc)
+						break
+					if action == "stop":
+						LOGGER.info("Demo debugger requested stop at message %s", forwarded)
+						break
 				if max_messages is not None and forwarded >= max_messages:
 					LOGGER.info("Demo limit reached (%s messages)", forwarded)
 					break
@@ -1195,6 +1484,51 @@ def parse_args() -> argparse.Namespace:
 		help="Sleep SECS seconds between forwarded messages in demo mode (e.g. 0.4)",
 	)
 	parser.add_argument(
+		"--demo-debugger",
+		action="store_true",
+		help="Enable interactive debugger controls in demo mode (n=step, c=continue, q=quit)",
+	)
+	parser.add_argument(
+		"--demo-breakpoints-config",
+		type=Path,
+		default=None,
+		help="Path to YAML breakpoint config (list or {breakpoints:[...]})",
+	)
+	parser.add_argument(
+		"--demo-breakpoint",
+		type=int,
+		action="append",
+		default=None,
+		metavar="N",
+		help="Add a forwarded-message breakpoint at N (repeatable)",
+	)
+	parser.add_argument(
+		"--replay",
+		action="store_true",
+		help="Enable timestamp-driven replay pacing using ITCH timestamps",
+	)
+	parser.add_argument(
+		"--replay-start-timestamp",
+		type=int,
+		default=None,
+		metavar="N",
+		help="ITCH nanoseconds-since-midnight anchor start; earlier messages are burst-sent",
+	)
+	parser.add_argument(
+		"--replay-start-time",
+		type=str,
+		default=None,
+		metavar="HH:MM:SS[.fffffffff]",
+		help="Replay start anchor as market-day time, interpreted as ITCH nanoseconds since midnight",
+	)
+	parser.add_argument(
+		"--replay-speed",
+		type=float,
+		default=None,
+		metavar="X",
+		help="Replay speed multiplier (1.0 = real timestamp pace, 2.0 = 2x faster)",
+	)
+	parser.add_argument(
 		"--benchmark",
 		action="store_true",
 		help="Enable benchmarking metrics for parsing and forwarding throughput",
@@ -1251,6 +1585,75 @@ def main() -> None:
 		max_messages = None
 	if args.demo:
 		LOGGER.warning("Demo mode enabled: forwarding first %s matching messages", max_messages)
+
+	if args.demo_debugger and not args.demo:
+		raise SystemExit("--demo-debugger requires --demo")
+
+	if (args.demo_breakpoints_config is not None or args.demo_breakpoint) and not args.demo:
+		raise SystemExit("Demo breakpoints require --demo")
+
+	demo_breakpoints: List[int] = []
+	if args.demo_breakpoints_config is not None:
+		demo_breakpoints = load_demo_breakpoints(args.demo_breakpoints_config)
+	if args.demo_breakpoint:
+		demo_breakpoints = _normalize_demo_breakpoints(args.demo_breakpoint)
+
+	demo_debugger: Optional[DemoDebugger] = None
+	if args.demo_debugger:
+		if not demo_breakpoints:
+			demo_breakpoints = [1]
+			LOGGER.info("Demo debugger enabled with no breakpoints; defaulting to breakpoint [1]")
+		demo_debugger = DemoDebugger(demo_breakpoints)
+		LOGGER.info("Demo debugger enabled: breakpoints=%s", list(demo_debugger.breakpoints))
+
+	if args.replay_start_timestamp is not None and args.replay_start_time is not None:
+		raise SystemExit("--replay-start-timestamp and --replay-start-time are mutually exclusive")
+
+	if args.replay_start_timestamp is not None and args.replay_start_timestamp < 0:
+		raise SystemExit("--replay-start-timestamp must be >= 0")
+
+	replay_enabled = False
+	replay_start_timestamp_ns: Optional[int] = None
+	replay_speed = 1.0
+	replay_prestart_burst = True
+
+	if cfg.replay is not None:
+		replay_enabled = cfg.replay.enabled
+		replay_start_timestamp_ns = cfg.replay.start_timestamp_ns
+		replay_speed = cfg.replay.speed
+		replay_prestart_burst = cfg.replay.prestart_burst
+
+	# CLI overrides
+	if args.replay:
+		replay_enabled = True
+	if args.replay_start_timestamp is not None:
+		replay_start_timestamp_ns = args.replay_start_timestamp
+		replay_enabled = True
+	if args.replay_start_time is not None:
+		replay_start_timestamp_ns = parse_itch_time_24h_to_ns(args.replay_start_time)
+		replay_enabled = True
+	if args.replay_speed is not None:
+		if args.replay_speed <= 0:
+			raise SystemExit("--replay-speed must be > 0")
+		replay_speed = args.replay_speed
+		replay_enabled = True
+
+	if replay_enabled:
+		if replay_start_timestamp_ns is None:
+			LOGGER.info("Replay pacing enabled from first forwarded message at speed %.3fx", replay_speed)
+		else:
+			LOGGER.info(
+				"Replay pacing enabled: burst-before-start until ITCH timestamp=%s (%s), then pace at %.3fx",
+				replay_start_timestamp_ns,
+				format_itch_timestamp(replay_start_timestamp_ns),
+				replay_speed,
+			)
+		if args.demo_delay is not None:
+			LOGGER.warning("--demo-delay is ignored when replay pacing is enabled")
+	if args.demo_debugger and replay_enabled:
+		LOGGER.warning("Replay pacing is ignored while --demo-debugger is active")
+	if args.demo_debugger and args.demo_delay is not None:
+		LOGGER.warning("--demo-delay is ignored while --demo-debugger is active")
 	if args.analytics:
 		LOGGER.info("Order ID analytics mode enabled")
 		if args.analytics_csv:
@@ -1285,6 +1688,11 @@ def main() -> None:
 			max_messages=max_messages,
 			demo_mode=args.demo,
 			demo_delay=args.demo_delay,
+			demo_debugger=demo_debugger,
+			replay_enabled=replay_enabled,
+			replay_start_timestamp_ns=replay_start_timestamp_ns,
+			replay_speed=replay_speed,
+			replay_prestart_burst=replay_prestart_burst,
 			benchmark_mode=args.benchmark,
 			analytics_mode=args.analytics,
 			analytics_csv=args.analytics_csv,

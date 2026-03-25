@@ -10,6 +10,8 @@ Thumbs.db
 *.tmp
 *~
 *.json
+*.NASDAQ_ITCH50
+*.bin
 
 ########################################
 # Quartus (ALL blocks)
