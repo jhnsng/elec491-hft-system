@@ -102,7 +102,16 @@ module hft_top (
 	HPS_USB_DATA,
 	HPS_USB_DIR,
 	HPS_USB_NXT,
-	HPS_USB_STP
+	HPS_USB_STP,
+
+
+    // Debug Virtual Pins for Algorithm I/O (Visible in SignalTap)
+	DEBUG_TOK_REQ_VALID,
+	DEBUG_ORD_VALID,
+	DEBUG_ORD_ACTION,
+	DEBUG_ORD_SIDE,
+	DEBUG_ORD_PRICE,
+	DEBUG_ORD_QTY
 );
 
 //=======================================================
@@ -220,6 +229,15 @@ input						HPS_USB_DIR;
 input						HPS_USB_NXT;
 output					HPS_USB_STP;
 
+
+// Debug Virtual Pins for Algorithm I/O (Visible in SignalTap)
+output        DEBUG_TOK_REQ_VALID;
+output        DEBUG_ORD_VALID;
+output [1:0]  DEBUG_ORD_ACTION;
+output        DEBUG_ORD_SIDE;
+output [31:0] DEBUG_ORD_PRICE;
+output [31:0] DEBUG_ORD_QTY;
+
 //=======================================================
 //  REG/WIRE declarations
 //=======================================================
@@ -255,13 +273,12 @@ wire [31:0] sink_qty;
 wire        sink_valid;
 
 // Orderbook wires
-wire [31:0] best_bid_price;
-wire [31:0] best_bid_qty;
-wire        best_bid_valid;
-wire [31:0] best_ask_price;
-wire [31:0] best_ask_qty;
-wire        best_ask_valid;
-
+(* keep = 1 *) wire [31:0] best_bid_price;
+(* keep = 1 *) wire [31:0] best_bid_qty;
+(* keep = 1 *) wire [31:0] best_ask_price;
+(* keep = 1 *) wire [31:0] best_ask_qty;
+(* keep = 1 *) wire        best_valid;
+               
 
 //=======================================================
 //  Structural coding
@@ -454,10 +471,9 @@ hft_top_system The_System (
 		.valid_in        (sink_valid),
 		.best_bid_price  (best_bid_price),
 		.best_bid_qty    (best_bid_qty),
-		.best_bid_valid  (best_bid_valid),
 		.best_ask_price  (best_ask_price),
 		.best_ask_qty    (best_ask_qty),
-		.best_ask_valid  (best_ask_valid)
+		.best_valid	     (best_valid)
 	);
 	
 
@@ -473,14 +489,58 @@ hft_top_system The_System (
 		.HEX5            (HEX5),
 		.best_bid_price  (best_bid_price),
 		.best_bid_qty    (best_bid_qty),
-		.best_bid_valid  (best_bid_valid),
 		.best_ask_price  (best_ask_price),
 		.best_ask_qty    (best_ask_qty),
-		.best_ask_valid  (best_ask_valid),
+		.best_valid	     (best_valid),
 		.clk             (CLOCK_50),
 		.reset_n         (KEY[0]),
 		.sw_price_qty    (SW[0]),  // SW[0]: 0=Price, 1=Quantity
 		.sw_bid_ask      (SW[1])   // SW[1]: 0=Bid, 1=Ask
 	);
+
+    algorithm u_algorithm (
+        .clk                (CLOCK_50),
+        .rst_n              (KEY[0]),
+
+        // L1 Inputs from orderbook
+        .l1_valid           (best_valid),
+        .l1_ready           (),                 // Ignored by orderbook
+        .l1_symbol_id       (16'd1),            // Hardcoded to AAPL ID
+        .l1_ts_ns           (64'd0),            
+        .bb_p               (best_bid_price),
+        .bb_q               (best_bid_qty),
+        .ba_p               (best_ask_price),
+        .ba_q               (best_ask_qty),
+
+		// Token Request Handshake
+		.tok_req_valid      (DEBUG_TOK_REQ_VALID),
+		.tok_req_ready      (1'b1),             // MUST BE 1 to prevent FSM stall
+		.tok_req_symbol_id  (),
+		.tok_req_strat_id   (),
+
+		// Token Response (Simulated Exchange)
+		.tok_resp_valid     (1'b1),             
+		.tok_resp_ready     (),
+		.tok_resp_symbol_id (16'd0),
+		.tok_resp_token_id  (32'hDEADBEEF),
+
+
+		// Order Intent Handshake (Tied to Debug Virtual Pins)
+		.ord_valid          (DEBUG_ORD_VALID),
+		.ord_ready          (1'b1),             // MUST BE 1 to prevent FSM stall
+		.ord_symbol_id      (),
+		.ord_action         (DEBUG_ORD_ACTION),
+		.ord_side           (DEBUG_ORD_SIDE),
+		.ord_price_int      (DEBUG_ORD_PRICE),
+		.ord_qty            (DEBUG_ORD_QTY),
+		.ord_token_id       (),
+        // Order Report Feedback
+        .rpt_valid          (1'b0),
+        .rpt_ready          (),
+        .rpt_symbol_id      (16'd0),
+        .rpt_token_id       (32'd0),
+        .rpt_kind           (2'b00),
+        .rpt_filled_total   (32'd0)
+    );
 
 endmodule // end top level
