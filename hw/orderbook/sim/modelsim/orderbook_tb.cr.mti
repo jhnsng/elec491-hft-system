@@ -1,0 +1,32 @@
+C:/Capstone_Proj/elec491-hft-system/hw/orderbook/src/tb/orderbook_tb.sv {1 {vlog -work work -sv -stats=none C:/Capstone_Proj/elec491-hft-system/hw/orderbook/src/tb/orderbook_tb.sv
+Model Technology ModelSim - Intel FPGA Edition vlog 10.5b Compiler 2016.10 Oct  5 2016
+-- Compiling module orderbook_tb
+-- Importing package _pkg
+
+Top level modules:
+	orderbook_tb
+
+} {} {}} C:/Capstone_Proj/elec491-hft-system/hw/orderbook/src/rtl/M10K_256_40.sv {1 {vlog -work work -sv -stats=none C:/Capstone_Proj/elec491-hft-system/hw/orderbook/src/rtl/M10K_256_40.sv
+Model Technology ModelSim - Intel FPGA Edition vlog 10.5b Compiler 2016.10 Oct  5 2016
+-- Compiling module M10K_256_40
+
+Top level modules:
+	M10K_256_40
+
+} {} {}} C:/Capstone_Proj/elec491-hft-system/hw/orderbook/src/rtl/_pkg.sv {1 {vlog -work work -sv -stats=none C:/Capstone_Proj/elec491-hft-system/hw/orderbook/src/rtl/_pkg.sv
+Model Technology ModelSim - Intel FPGA Edition vlog 10.5b Compiler 2016.10 Oct  5 2016
+-- Compiling package _pkg
+
+Top level modules:
+	--none--
+
+} {} {}} C:/Capstone_Proj/elec491-hft-system/hw/orderbook/src/rtl/orderbook.sv {1 {vlog -work work -sv -stats=none C:/Capstone_Proj/elec491-hft-system/hw/orderbook/src/rtl/orderbook.sv
+Model Technology ModelSim - Intel FPGA Edition vlog 10.5b Compiler 2016.10 Oct  5 2016
+-- Compiling package orderbook_sv_unit
+-- Importing package _pkg
+-- Compiling module orderbook
+
+Top level modules:
+	orderbook
+
+} {} {}}

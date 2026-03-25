@@ -17,11 +17,11 @@ module orderbook #(
     // Best bid outputs
     output logic [PRICE_WIDTH-1:0]   best_bid_price,
     output logic [QTY_WIDTH-1:0]     best_bid_qty,
-    output logic                     best_bid_valid,
     // Best ask outputs
     output logic [PRICE_WIDTH-1:0]   best_ask_price,
     output logic [QTY_WIDTH-1:0]     best_ask_qty,
-    output logic                     best_ask_valid
+    // Combined valid output (high when either bid or ask is valid)
+    output logic                     best_valid
 );
 
     logic [PRICE_WIDTH-1:0] buffer_index;
@@ -226,10 +226,9 @@ module orderbook #(
             // Initialize outputs
             best_bid_price <= '0;
             best_bid_qty <= '0;
-            best_bid_valid <= 1'b0;
             best_ask_price <= '0;
             best_ask_qty <= '0;
-            best_ask_valid <= 1'b0;
+            best_valid <= 1'b0;
             
             // Initialize all control signals
             for (int i = 0; i < NUM_M10K_BLOCKS; i++) begin
@@ -369,6 +368,8 @@ module orderbook #(
                 end
                 
                 REDUCE_TREE: begin
+                    best_valid <= 1'b0;
+                    
                     case (tree_stage)
                         4'd0: begin  // 16→8 reduction
                             // Hard-coded comparisons
@@ -570,10 +571,10 @@ module orderbook #(
                         4'd4: begin  // Latch outputs
                             best_bid_price <= bid_final.price;
                             best_bid_qty <= bid_final.qty;
-                            best_bid_valid <= bid_final.valid;
                             best_ask_price <= ask_final.price;
                             best_ask_qty <= ask_final.qty;
-                            best_ask_valid <= ask_final.valid;
+                            // Combined valid: high if either bid or ask is valid
+                            best_valid <= bid_final.valid || ask_final.valid;
                             
                             tree_stage <= 4'd5;
                         end

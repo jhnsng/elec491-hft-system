@@ -135,7 +135,7 @@ module avalon_st_sink (
                         price_reg <= {data[5:0], data[15:8], data[23:16], data[31:24], 2'b00};  // Bits [29:0] of swapped, then << 2
                         delta_qty_reg <= low_word;
                         
-                        // Assert valid outputs
+                        // Assert valid output
                         valid_reg <= 1'b1;
                         
                     end else if (valid && startofpacket) begin

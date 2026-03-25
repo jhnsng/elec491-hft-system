@@ -17,10 +17,9 @@ module orderbook_display (
     // Inputs from orderbook module
     input  logic [31:0] best_bid_price,
     input  logic [31:0] best_bid_qty,
-    input  logic        best_bid_valid,
     input  logic [31:0] best_ask_price,
     input  logic [31:0] best_ask_qty,
-    input  logic        best_ask_valid,
+    input  logic        best_valid,      // Combined valid for bid and ask
     
     // Control inputs
     input  logic        clk,
@@ -56,19 +55,19 @@ module orderbook_display (
         case ({sw_bid_ask, sw_price_qty})
             2'b00: begin // Bid Price
                 selected_value = best_bid_price;
-                selected_valid = best_bid_valid;
+                selected_valid = best_valid;
             end
             2'b01: begin // Bid Quantity
                 selected_value = best_bid_qty;
-                selected_valid = best_bid_valid;
+                selected_valid = best_valid;
             end
             2'b10: begin // Ask Price
                 selected_value = best_ask_price;
-                selected_valid = best_ask_valid;
+                selected_valid = best_valid;
             end
             2'b11: begin // Ask Quantity
                 selected_value = best_ask_qty;
-                selected_valid = best_ask_valid;
+                selected_valid = best_valid;
             end
         endcase
     end
@@ -135,15 +134,7 @@ module orderbook_display (
             HEX4 <= HEX_BLANK;
             HEX5 <= HEX_BLANK;
         end else begin
-            if (!selected_valid) begin
-                // Display dashes when no valid data
-                HEX0 <= HEX_DASH;
-                HEX1 <= HEX_DASH;
-                HEX2 <= HEX_DASH;
-                HEX3 <= HEX_DASH;
-                HEX4 <= HEX_DASH;
-                HEX5 <= HEX_DASH;
-            end else if (has_overflow) begin
+            if (has_overflow) begin
                 // Show "E" on highest display to indicate overflow
                 HEX0 <= bcd_to_7seg(digit[0]);
                 HEX1 <= bcd_to_7seg(digit[1]);
