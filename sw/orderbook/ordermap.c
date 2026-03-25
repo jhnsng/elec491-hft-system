@@ -48,7 +48,7 @@ ob_update order_add(uint64_t id, uint32_t price,
 {
     // Convert from network byte order (little-endian) to host byte order
     id = be64toh_manual(id);
-    price = ntohl_manual(price);
+    price = ntohl_manual(price) / 100;
     
     order_entry_t *e = &order_map[id];
     e->price = price;
@@ -57,7 +57,7 @@ ob_update order_add(uint64_t id, uint32_t price,
     e->valid = 1;
     
     // Pack into 64 bits: [side(1bit)][price>>2(31bits)][qty(32bits)]
-    return ((uint64_t)e->side << 63) | ((uint64_t)(price >> 2) << 32) | qty;
+    return ((uint64_t)e->side << 63) | ((uint64_t)price << 32) | qty;
 }
 
 ob_update order_cancel_execute(uint64_t id, uint32_t qty)
@@ -74,7 +74,7 @@ ob_update order_cancel_execute(uint64_t id, uint32_t qty)
     negated_qty = htonl_manual(negated_qty);
     
     // Pack into 64 bits: [side(1bit)][price>>2(31bits)][negated_qty(32bits)]
-    uint64_t packed = ((uint64_t)e->side << 63) | ((uint64_t)(e->price >> 2) << 32) | negated_qty;
+    uint64_t packed = ((uint64_t)e->side << 63) | ((uint64_t)e->price << 32) | negated_qty;
     
     if (qty >= e->qty) {
         // fully canceled/executed
@@ -101,7 +101,7 @@ ob_update order_delete(uint64_t id) {
     negated_qty = htonl_manual(negated_qty);
     
     // Pack into 64 bits: [side(1bit)][price>>2(31bits)][negated_qty(32bits)]
-    uint64_t packed = ((uint64_t)e->side << 63) | ((uint64_t)(e->price >> 2) << 32) | negated_qty;
+    uint64_t packed = ((uint64_t)e->side << 63) | ((uint64_t)e->price << 32) | negated_qty;
     
     if (!e->valid) return packed;
 

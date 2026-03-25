@@ -132,7 +132,7 @@ module avalon_st_sink (
                         // Bit reordering: {data[7:0], data[15:8], data[23:16], data[31:24]}
                         
                         side_reg <= data[7];  // MSB of swapped data (bit 31 after swap)
-                        price_reg <= {data[5:0], data[15:8], data[23:16], data[31:24], 2'b00};  // Bits [29:0] of swapped, then << 2
+                        price_reg <= {data[5:0], data[15:8], data[23:16], data[31:24]};  // Bits [29:0] of swapped, then << 2
                         delta_qty_reg <= low_word;
                         
                         // Assert valid output
