@@ -1491,7 +1491,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--demo-breakpoints-config",
 		type=Path,
-		default=None,
+		default=Path(__file__).parent / "demo_breakpoints.yaml",
 		help="Path to YAML breakpoint config (list or {breakpoints:[...]})",
 	)
 	parser.add_argument(
@@ -1576,24 +1576,25 @@ def main() -> None:
 		format="%(asctime)s %(levelname)s %(name)s - %(message)s",
 	)
 	cfg = load_config(args.config)
-	# --max-messages takes precedence over --demo's default of 20
+	# Auto-enable demo mode if debugger is requested
+	demo_mode_enabled = args.demo or args.demo_debugger
+
+	# --max-messages takes precedence; debugger defaults to high limit, --demo defaults to 20
 	if args.max_messages is not None:
 		max_messages = args.max_messages
+	elif args.demo_debugger:
+		max_messages = 1_000_000  # High limit for interactive debugging
+		demo_mode_enabled = True  # Ensure demo mode is on
 	elif args.demo:
 		max_messages = 20
 	else:
 		max_messages = None
-	if args.demo:
+
+	if demo_mode_enabled:
 		LOGGER.warning("Demo mode enabled: forwarding first %s matching messages", max_messages)
 
-	if args.demo_debugger and not args.demo:
-		raise SystemExit("--demo-debugger requires --demo")
-
-	if (args.demo_breakpoints_config is not None or args.demo_breakpoint) and not args.demo:
-		raise SystemExit("Demo breakpoints require --demo")
-
 	demo_breakpoints: List[int] = []
-	if args.demo_breakpoints_config is not None:
+	if args.demo_breakpoints_config.exists():
 		demo_breakpoints = load_demo_breakpoints(args.demo_breakpoints_config)
 	if args.demo_breakpoint:
 		demo_breakpoints = _normalize_demo_breakpoints(args.demo_breakpoint)
@@ -1686,7 +1687,7 @@ def main() -> None:
 		forward(
 			cfg,
 			max_messages=max_messages,
-			demo_mode=args.demo,
+			demo_mode=demo_mode_enabled,
 			demo_delay=args.demo_delay,
 			demo_debugger=demo_debugger,
 			replay_enabled=replay_enabled,
