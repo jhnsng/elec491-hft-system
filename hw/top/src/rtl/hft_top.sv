@@ -278,6 +278,19 @@ wire        sink_valid;
 (* keep = 1 *) wire [31:0] best_ask_price;
 (* keep = 1 *) wire [31:0] best_ask_qty;
 (* keep = 1 *) wire        best_valid;
+
+// =========================================================
+// Interconnect Wires: Algorithm <-> OUCH Inbound
+// =========================================================
+logic        ord_valid_w;
+logic        ord_ready_w;
+logic [15:0] ord_symbol_id_w;
+logic [1:0]  ord_action_w;
+logic        ord_side_w;
+logic [31:0] ord_price_int_w;
+logic [31:0] ord_qty_w;
+logic [31:0] ord_token_id_w;
+logic [15:0] ord_strat_id_w;
                
 
 //=======================================================
@@ -525,22 +538,56 @@ hft_top_system The_System (
 		.tok_resp_token_id  (32'hDEADBEEF),
 
 
-		// Order Intent Handshake (Tied to Debug Virtual Pins)
-		.ord_valid          (DEBUG_ORD_VALID),
-		.ord_ready          (1'b1),             // MUST BE 1 to prevent FSM stall
-		.ord_symbol_id      (),
-		.ord_action         (DEBUG_ORD_ACTION),
-		.ord_side           (DEBUG_ORD_SIDE),
-		.ord_price_int      (DEBUG_ORD_PRICE),
-		.ord_qty            (DEBUG_ORD_QTY),
-		.ord_token_id       (),
-        // Order Report Feedback
-        .rpt_valid          (1'b0),
-        .rpt_ready          (),
-        .rpt_symbol_id      (16'd0),
-        .rpt_token_id       (32'd0),
-        .rpt_kind           (2'b00),
-        .rpt_filled_total   (32'd0)
-    );
+		.ord_valid          (ord_valid_w),
+		.ord_ready          (ord_ready_w),      // Driven by OUCH
+		.ord_symbol_id      (ord_symbol_id_w),
+		.ord_action         (ord_action_w),
+		.ord_side           (ord_side_w),
+		.ord_price_int      (ord_price_int_w),
+		.ord_qty            (ord_qty_w),
+		.ord_token_id       (ord_token_id_w),
+		
+		// Order Report Feedback
+		.rpt_valid          (1'b0),
+		.rpt_ready          (),
+		.rpt_symbol_id      (16'd0),
+		.rpt_token_id       (32'd0),
+		.rpt_kind           (2'b00),
+		.rpt_filled_total   (32'd0)
+);
+
+	// OUCH modules
+
+	ouch_inbound u_ouch_inbound (
+    .clk               (CLOCK_50),
+    .rst_n             (KEY[0]),
+
+    //=== INPUT: Algorithm Block Commands ===
+		.algo_cmd_valid   (ord_valid_w),
+		.algo_cmd_ready   (ord_ready_w),                // Feeds back to algorithm
+		.algo_cmd_type    (ord_action_w - 2'd1),        // Translates 1/2 to 0/1
+		.algo_qty         (ord_qty_w),
+		.algo_side        ({1'b0, ord_side_w}),         // Pads 1-bit to 2-bit
+		.algo_symbol      ({48'd0, ord_symbol_id_w}),   // Pads 16-bit to 64-bit
+		.algo_price_ticks ({32'd0, ord_price_int_w}),   // Pads 32-bit to 64-bit
+		.algo_orig_ref    (ord_token_id_w),
+
+    // Avalon-ST Source
+    .st_data           (fifo_fpga_to_hps_in_data),
+    .st_valid          (fifo_fpga_to_hps_in_valid),
+    .st_ready          (fifo_fpga_to_hps_in_ready),
+    .st_startofpacket  (fifo_fpga_to_hps_in_sop),
+    .st_endofpacket    (fifo_fpga_to_hps_in_eop),
+    .st_empty          (fifo_fpga_to_hps_in_empty)
+	);
+
+// =========================================================
+// Optional: Keep your Debug Pins Alive for SignalTap
+// =========================================================
+assign debug_ord_valid  = ord_valid_w;
+assign debug_ord_action = ord_action_w;
+assign debug_ord_side   = ord_side_w;
+assign debug_ord_price  = ord_price_int_w;
+assign debug_ord_qty    = ord_qty_w;
 
 endmodule // end top level
