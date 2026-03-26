@@ -1,5 +1,6 @@
 # itch_file: ..\..\..\gen_test_vectors\outputs\exchange_vectors.bin
-itch_file: /home/qazed/elec491-hft-system/sw/exchange/07302019.bin
+#itch_file: /home/qazed/elec491-hft-system/sw/exchange/07302019.bin
+itch_file: ..\..\..\gen_test_vectors\outputs\exchange_vectors.bin
 
 udp:
   host: 192.168.1.123
@@ -22,7 +23,7 @@ replay:
   prestart_burst: true
 
 tickers:
-  - SPY
+  - AAPL
 #  - MSFT
 
 ouch:

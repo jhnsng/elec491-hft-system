@@ -1,5 +1,9 @@
 # Demo debugger breakpoints are based on forwarded matching message count.
 breakpoints:
-  - 5
-  - 10
-  - 20
+  - 58
+  - 258
+  - 338
+  - 418
+  - 618
+  - 698
+  - 778
