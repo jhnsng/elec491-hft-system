@@ -204,7 +204,7 @@ class ExchangeDecoder(BaseDecoder):
             '',
         ]
 
-        for row in json_data:
+        for frame_index, row in enumerate(json_data, start=1):
             msg_type = row.get('Message Type', '').upper()
             row_num = row['row_number']
 
@@ -252,7 +252,7 @@ class ExchangeDecoder(BaseDecoder):
 
             hex_str = ' '.join(f'{b:02X}' for b in frame)
             py_lines.append(f'# {desc}')
-            py_lines.append(f'FRAME_{row_num} = bytes.fromhex("{hex_str}")')
+            py_lines.append(f'FRAME_{frame_index} = bytes.fromhex("{hex_str}")')
             py_lines.append('')
 
         # Write JSON output (parsed Excel data)

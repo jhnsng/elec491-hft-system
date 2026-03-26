@@ -85,3 +85,7 @@ data_types:
   Side: str
   Stock: str
   Attribution: str
+
+output:
+  combine_sheets: true
+  summary_filename: exchange_sheet_message_counts.txt

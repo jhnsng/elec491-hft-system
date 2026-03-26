@@ -14,6 +14,7 @@ import argparse
 import sys
 from pathlib import Path
 import re
+from typing import Dict, Any, List
 
 from excel_to_json import ExcelToJsonParser
 from decoders.exchange_decoder import ExchangeDecoder
@@ -43,6 +44,42 @@ class TestVectorGenerator:
         """Create a filesystem-safe folder name from a sheet name."""
         sanitized = re.sub(r"[^A-Za-z0-9._-]", "_", str(sheet_name).strip())
         return sanitized or "sheet"
+
+    def _should_combine_sheets(self) -> bool:
+        """Return whether configured sheets should be decoded into one combined output."""
+        return bool(self.config.get("output", {}).get("combine_sheets", False))
+
+    def _summary_filename(self) -> str:
+        """Resolve summary filename from config with a sensible default."""
+        return str(self.config.get("output", {}).get("summary_filename", "sheet_message_counts.txt"))
+
+    def _write_sheet_summary(self, sheet_results: List[Dict[str, Any]], output_dir: Path) -> Path:
+        """
+        Write a text summary with per-sheet row counts and cumulative message ranges.
+
+        This helps locate approximate breakpoints at sheet boundaries in combined outputs.
+        """
+        summary_path = output_dir / self._summary_filename()
+        lines: List[str] = []
+        running_total = 0
+
+        for sheet in sheet_results:
+            sheet_name = str(sheet["sheet_name"])
+            row_count = len(sheet["rows"])
+            start_idx = running_total + 1 if row_count > 0 else running_total
+            end_idx = running_total + row_count
+
+            lines.append(sheet_name)
+            lines.append(f"rows/messages: {row_count}")
+            lines.append(f"start_message_index: {start_idx}")
+            lines.append(f"end_message_index: {end_idx}")
+            lines.append("")
+
+            running_total = end_idx
+
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+        return summary_path
     
     def get_decoder(self, output_dir: Path):
         """
@@ -78,25 +115,48 @@ class TestVectorGenerator:
         sheet_results = self.parser.parse_all_sheets()
         print(f"  Parsed {len(sheet_results)} sheet(s)")
 
-        # Step 2: Decode each sheet into a sheet-specific output folder
-        print("\nStep 2: Generating output files per sheet...")
+        # Step 2: Decode sheets in configured output mode.
+        combine_sheets = self._should_combine_sheets()
         output_files = []
-        for sheet_result in sheet_results:
-            sheet_name = sheet_result["sheet_name"]
-            sheet_index = sheet_result["sheet_index"]
-            json_data = sheet_result["rows"]
 
-            sheet_output_dir = self.output_dir / self._sanitize_sheet_name(sheet_name)
-            sheet_output_dir.mkdir(parents=True, exist_ok=True)
+        if combine_sheets:
+            print("\nStep 2: Generating combined output across all sheets...")
+            for sheet_result in sheet_results:
+                print(
+                    f"  - Sheet {sheet_result['sheet_index']}: "
+                    f"{sheet_result['sheet_name']} ({len(sheet_result['rows'])} rows)"
+                )
 
-            decoder = self.get_decoder(sheet_output_dir)
+            decoder = self.get_decoder(self.output_dir)
+            combined_rows: List[Dict[str, Any]] = []
+            for sheet_result in sheet_results:
+                combined_rows.extend(sheet_result["rows"])
 
-            # Optional context hook for decoders that need sheet metadata.
-            if hasattr(decoder, "set_sheet_context"):
-                decoder.set_sheet_context(sheet_name=sheet_name, sheet_index=sheet_index)
+            output_files.extend(decoder.decode(combined_rows))
+        else:
+            print("\nStep 2: Generating output files per sheet...")
+            for sheet_result in sheet_results:
+                sheet_name = sheet_result["sheet_name"]
+                sheet_index = sheet_result["sheet_index"]
+                json_data = sheet_result["rows"]
 
-            print(f"  - Sheet {sheet_index}: {sheet_name} ({len(json_data)} rows)")
-            output_files.extend(decoder.decode(json_data))
+                sheet_output_dir = self.output_dir / self._sanitize_sheet_name(sheet_name)
+                sheet_output_dir.mkdir(parents=True, exist_ok=True)
+
+                decoder = self.get_decoder(sheet_output_dir)
+
+                # Optional context hook for decoders that need sheet metadata.
+                if hasattr(decoder, "set_sheet_context"):
+                    decoder.set_sheet_context(sheet_name=sheet_name, sheet_index=sheet_index)
+
+                print(f"  - Sheet {sheet_index}: {sheet_name} ({len(json_data)} rows)")
+                output_files.extend(decoder.decode(json_data))
+
+        # Step 3: Always emit sheet row/message summary for debug breakpoint planning.
+        print("\nStep 3: Writing per-sheet message summary...")
+        summary_path = self._write_sheet_summary(sheet_results, self.output_dir)
+        output_files.append(summary_path)
+        print(f"  Generated: {summary_path}")
 
         print("\n=== Generation Complete ===")
         print("Output files:")
