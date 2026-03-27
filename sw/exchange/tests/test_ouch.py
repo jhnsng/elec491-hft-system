@@ -41,19 +41,19 @@ class TestStructSizes:
     """Verify struct formats match the OUCH 5.0 spec byte counts."""
 
     def test_enter_order_size(self):
-        assert ENTER_ORDER_FMT.size == 47
+        assert ENTER_ORDER_FMT.size == 45
 
     def test_cancel_order_size(self):
         assert CANCEL_ORDER_FMT.size == 9
 
     def test_accepted_size(self):
-        assert ACCEPTED_FMT.size == 64
+        assert ACCEPTED_FMT.size == 62
 
     def test_canceled_size(self):
         assert CANCELED_FMT.size == 18
 
     def test_executed_size(self):
-        assert EXECUTED_FMT.size == 36
+        assert EXECUTED_FMT.size == 34
 
 
 ###############################################################################
@@ -67,7 +67,7 @@ class TestMessageParsing:
     def test_parse_enter_order_valid(self):
         msg = ENTER_ORDER_FMT.pack(
             b'O', 42, b'B', 100, b'SPY     ', 2950000,
-            b'0', b'Y', b'A', b'N', b'N', b'DEMO_ORD_ID   ', 0,
+            b'0', b'Y', b'A', b'N', b'N', b'DEMO_ORD_ID   ',
         )
         fields = parse_enter_order(msg)
         assert fields["user_ref_num"] == 42
@@ -83,7 +83,7 @@ class TestMessageParsing:
     def test_parse_enter_order_sell_short(self):
         msg = ENTER_ORDER_FMT.pack(
             b'O', 1, b'T', 500, b'AAPL    ', 1500000,
-            b'0', b'Y', b'P', b'N', b'N', b'SHORT_ORDER   ', 0,
+            b'0', b'Y', b'P', b'N', b'N', b'SHORT_ORDER   ',
         )
         fields = parse_enter_order(msg)
         assert fields["side"] == b'T'
@@ -94,7 +94,7 @@ class TestMessageParsing:
             parse_enter_order(b'O' + b'\x00' * 10)
 
     def test_parse_enter_order_wrong_type(self):
-        msg = b'X' + b'\x00' * 46
+        msg = b'X' + b'\x00' * 44
         with pytest.raises(ValueError, match="Expected type O"):
             parse_enter_order(msg)
 
@@ -144,7 +144,7 @@ class TestMessageBuilding:
             order_state=b'L',
             cl_ord_id=b'TEST_ID       ',
         )
-        assert len(msg) == 64
+        assert len(msg) == 62
         assert msg[0:1] == b'A'
         fields = ACCEPTED_FMT.unpack(msg)
         assert fields[0] == b'A'
@@ -200,7 +200,7 @@ class TestMessageBuilding:
             liquidity_flag=b'R',
             match_number=1001,
         )
-        assert len(msg) == 36
+        assert len(msg) == 34
         assert msg[0:1] == b'E'
         fields = EXECUTED_FMT.unpack(msg)
         assert fields[2] == 7
@@ -334,7 +334,7 @@ class TestPaperTradingLogic:
 
         msg = ENTER_ORDER_FMT.pack(
             b'O', 1, b'B', 100, b'SPY     ', 100,
-            b'0', b'Y', b'A', b'N', b'N', b'TEST_CL_ORD   ', 0,
+            b'0', b'Y', b'A', b'N', b'N', b'TEST_CL_ORD   ',
         )
         resps = self._send_and_recv(client, msg, 1)
         assert len(resps) >= 1
@@ -356,7 +356,7 @@ class TestPaperTradingLogic:
 
         msg = ENTER_ORDER_FMT.pack(
             b'O', 1, b'B', 100, b'SPY     ', 3000000,
-            b'0', b'Y', b'A', b'N', b'N', b'BUY_CROSS     ', 0,
+            b'0', b'Y', b'A', b'N', b'N', b'BUY_CROSS     ',
         )
         resps = self._send_and_recv(client, msg, 2)
         assert len(resps) == 2
@@ -379,7 +379,7 @@ class TestPaperTradingLogic:
 
         msg = ENTER_ORDER_FMT.pack(
             b'O', 1, b'S', 50, b'SPY     ', 2900000,
-            b'0', b'Y', b'A', b'N', b'N', b'SELL_CROSS    ', 0,
+            b'0', b'Y', b'A', b'N', b'N', b'SELL_CROSS    ',
         )
         resps = self._send_and_recv(client, msg, 2)
         assert len(resps) == 2
@@ -402,7 +402,7 @@ class TestPaperTradingLogic:
 
         msg = ENTER_ORDER_FMT.pack(
             b'O', 1, b'B', 100, b'SPY     ', 2900000,
-            b'0', b'Y', b'A', b'N', b'N', b'BUY_NO_CROSS  ', 0,
+            b'0', b'Y', b'A', b'N', b'N', b'BUY_NO_CROSS  ',
         )
         resps = self._send_and_recv(client, msg, 1)
         assert len(resps) == 1
@@ -430,7 +430,7 @@ class TestPaperTradingLogic:
 
         msg = ENTER_ORDER_FMT.pack(
             b'O', 1, b'B', 100, b'SPY     ', 3000000,
-            b'0', b'Y', b'A', b'N', b'N', b'NO_BBO_ORDER  ', 0,
+            b'0', b'Y', b'A', b'N', b'N', b'NO_BBO_ORDER  ',
         )
         resps = self._send_and_recv(client, msg, 1)
         assert len(resps) == 1
@@ -449,7 +449,7 @@ class TestPaperTradingLogic:
         # Enter an order that won't cross
         enter_msg = ENTER_ORDER_FMT.pack(
             b'O', 1, b'B', 200, b'SPY     ', 100,
-            b'0', b'Y', b'A', b'N', b'N', b'TO_CANCEL     ', 0,
+            b'0', b'Y', b'A', b'N', b'N', b'TO_CANCEL     ',
         )
         self._send_and_recv(client, enter_msg, 1)
 
@@ -498,7 +498,7 @@ class TestPaperTradingLogic:
         # Enter a buy that crosses (fully executed)
         enter_msg = ENTER_ORDER_FMT.pack(
             b'O', 1, b'B', 100, b'SPY     ', 3000000,
-            b'0', b'Y', b'A', b'N', b'N', b'EXEC_THEN_CXL ', 0,
+            b'0', b'Y', b'A', b'N', b'N', b'EXEC_THEN_CXL ',
         )
         self._send_and_recv(client, enter_msg, 2)  # Accepted + Executed
 

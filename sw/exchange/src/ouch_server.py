@@ -70,29 +70,29 @@ class PaperOrder:
 # Struct formats (OUCH 5.0 spec)
 ###############################################################################
 
-# Inbound: Enter Order (O) - 47 bytes minimum
+# Inbound: Enter Order (O) - 45 bytes minimum
 # Type(c1) UserRefNum(I4) Side(c1) Qty(I4) Symbol(8s) Price(Q8)
-# TIF(c1) Display(c1) Capacity(c1) ISE(c1) CrossType(c1) ClOrdID(14s) AppLen(H2)
-ENTER_ORDER_FMT = struct.Struct(">cIcI8sQccccc14sH")
+# TIF(c1) Display(c1) Capacity(c1) ISE(c1) CrossType(c1) ClOrdID(14s)
+ENTER_ORDER_FMT = struct.Struct(">cIcI8sQccccc14s")
 
 # Inbound: Cancel Order (X) - 9 bytes minimum
 # Type(c1) UserRefNum(I4) Quantity(I4)
 CANCEL_ORDER_FMT = struct.Struct(">cII")
 
-# Outbound: Order Accepted (A) - 64 bytes
+# Outbound: Order Accepted (A) - 62 bytes
 # Type(c1) Timestamp(Q8) UserRefNum(I4) Side(c1) Qty(I4) Symbol(8s) Price(Q8)
 # TIF(c1) Display(c1) OrderRefNum(Q8) Capacity(c1) ISE(c1) CrossType(c1)
-# OrderState(c1) ClOrdID(14s) AppendageLength(H2)
-ACCEPTED_FMT = struct.Struct(">cQIcI8sQccQcccc14sH")
+# OrderState(c1) ClOrdID(14s)
+ACCEPTED_FMT = struct.Struct(">cQIcI8sQccQcccc14s")
 
 # Outbound: Order Canceled (C) - 18 bytes
 # Type(c1) Timestamp(Q8) UserRefNum(I4) Quantity(I4) Reason(c1)
 CANCELED_FMT = struct.Struct(">cQIIc")
 
-# Outbound: Order Executed (E) - 36 bytes
+# Outbound: Order Executed (E) - 34 bytes
 # Type(c1) Timestamp(Q8) UserRefNum(I4) Qty(I4) Price(Q8)
-# LiquidityFlag(c1) MatchNumber(Q8) AppendageLength(H2)
-EXECUTED_FMT = struct.Struct(">cQIIQcQH")
+# LiquidityFlag(c1) MatchNumber(Q8)
+EXECUTED_FMT = struct.Struct(">cQIIQcQ")
 
 
 ###############################################################################
@@ -134,7 +134,7 @@ def build_accepted(
         b'A', timestamp_ns, user_ref_num, side, quantity,
         symbol, price, time_in_force, display,
         order_ref_num, capacity, ise, cross_type,
-        order_state, cl_ord_id, 0,
+        order_state, cl_ord_id,
     )
 
 
@@ -161,7 +161,7 @@ def build_executed(
     """Build an Order Executed (E) outbound message."""
     return EXECUTED_FMT.pack(
         b'E', timestamp_ns, user_ref_num, executed_quantity,
-        price, liquidity_flag, match_number, 0,
+        price, liquidity_flag, match_number,
     )
 
 
@@ -174,7 +174,7 @@ def parse_enter_order(data: bytes) -> dict:
     """Parse an Enter Order (O) message.
 
     Args:
-        data: Raw message bytes (must start with b'O', >= 47 bytes)
+        data: Raw message bytes (must start with b'O', >= 45 bytes)
 
     Returns:
         Dict of parsed fields
@@ -188,7 +188,7 @@ def parse_enter_order(data: bytes) -> dict:
         )
     (
         msg_type, user_ref_num, side, quantity, symbol, price,
-        tif, display, capacity, ise, cross_type, cl_ord_id, app_len,
+        tif, display, capacity, ise, cross_type, cl_ord_id,
     ) = ENTER_ORDER_FMT.unpack_from(data, 0)
 
     if msg_type != b'O':
@@ -206,7 +206,6 @@ def parse_enter_order(data: bytes) -> dict:
         "ise": ise,
         "cross_type": cross_type,
         "cl_ord_id": cl_ord_id,
-        "appendage_length": app_len,
     }
 
 

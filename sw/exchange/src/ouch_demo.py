@@ -103,7 +103,6 @@ def _send_enter_order(
         b"N",  # ISE
         b"N",  # cross_type
         b"DEMO_CLIENT   ",  # cl_ord_id (14 bytes)
-        0,  # appendage_length
     )
     sock.sendall(_frame_message(msg))
 
