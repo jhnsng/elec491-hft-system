@@ -558,6 +558,18 @@ class OUCHServer:
             t.join(timeout=remaining)
         LOGGER.info("All OUCH clients disconnected")
 
+    def wait_for_client_connection(self, timeout: float = 30.0) -> bool:
+        """Wait for at least one OUCH client connection.
+
+        Returns True if a client is connected before timeout, otherwise False.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and not self._stop_event.is_set():
+            if any(t.is_alive() for t in self._client_threads):
+                return True
+            time.sleep(0.1)
+        return any(t.is_alive() for t in self._client_threads)
+
     def _accept_loop(self) -> None:
         """Accept incoming TCP connections, spawn session threads."""
         assert self._server_socket is not None

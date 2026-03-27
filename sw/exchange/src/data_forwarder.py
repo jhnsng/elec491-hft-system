@@ -1222,6 +1222,21 @@ def forward(
 		ouch_server = OUCHServer(ouch_settings, orderbook)
 		ouch_server.start()
 
+	# In OUCH + replay mode, wait for a client before replay pacing begins.
+	if ouch_server is not None and replay_enabled and demo_debugger is None:
+		wait_timeout_s = 30.0
+		LOGGER.info(
+			"OUCH replay gate: waiting up to %.1fs for at least one OUCH client connection before starting replay",
+			wait_timeout_s,
+		)
+		if ouch_server.wait_for_client_connection(timeout=wait_timeout_s):
+			LOGGER.info("OUCH replay gate satisfied: client connected, starting replay")
+		else:
+			LOGGER.warning(
+				"OUCH replay gate timeout after %.1fs with no client; starting replay anyway",
+				wait_timeout_s,
+			)
+
 	if cfg.reader.preload_bytes > 0 and benchmark_mode:
 		LOGGER.info(
 			"Preloading up to %s bytes of ITCH file into memory for benchmark",
