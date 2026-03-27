@@ -7,6 +7,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from data_forwarder import (
+    Message,
+    TickerFilter,
     DemoDebugger,
     DemoDebuggerNonInteractive,
     _normalize_demo_breakpoints,
@@ -18,6 +20,20 @@ from data_forwarder import (
     extract_shares,
     parse_itch_time_24h_to_ns,
 )
+
+
+def _make_message(msg_type: str, payload: bytes) -> Message:
+    msg_len = len(payload) + 1
+    raw = msg_len.to_bytes(2, "big") + msg_type.encode("ascii") + payload
+    return Message(raw)
+
+
+class _StubOrderBook:
+    def __init__(self, ticker: str):
+        self._ticker = ticker
+
+    def get_ticker(self, _order_id: int):
+        return self._ticker
 
 
 class TestExtractOrderId:
@@ -299,6 +315,32 @@ class TestParseReplaySettings:
     def test_parse_replay_invalid_speed(self):
         with pytest.raises(ValueError):
             _parse_replay_settings({"speed": 0})
+
+
+class TestForwardableITCHTypes:
+    def test_should_forward_supported_add_order(self):
+        payload = bytearray(35)
+        payload[23:31] = b"AAPL    "
+        msg = _make_message("A", bytes(payload))
+
+        filt = TickerFilter({"AAPL"})
+        assert filt.should_forward(msg) is True
+
+    def test_should_not_forward_unsupported_trade_message(self):
+        payload = bytearray(37)
+        payload[23:31] = b"AAPL    "
+        msg = _make_message("P", bytes(payload))
+
+        filt = TickerFilter({"AAPL"})
+        assert filt.should_forward(msg) is False
+
+    def test_should_forward_supported_cancel_with_orderbook_resolution(self):
+        payload = bytearray(27)
+        payload[10:18] = (123).to_bytes(8, "big")
+        msg = _make_message("X", bytes(payload))
+
+        filt = TickerFilter({"AAPL"}, orderbook=_StubOrderBook("AAPL"))
+        assert filt.should_forward(msg) is True
 
 
 class TestDemoBreakpoints:

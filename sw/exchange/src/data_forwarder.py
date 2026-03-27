@@ -473,6 +473,9 @@ class Message:
 
 TickerExtractor = Callable[[memoryview], Optional[str]]
 
+# Only these ITCH message types are forwarded downstream.
+FORWARDABLE_ITCH_TYPES = frozenset({"A", "F", "X", "D", "E"})
+
 
 def extract_order_id(message_type: str, payload: memoryview) -> Optional[int]:
 	"""Extract order ID from ITCH message payload (modular function).
@@ -769,6 +772,8 @@ class TickerFilter:
 			True if message matches a tracked ticker, False otherwise
 		"""
 		msg_type = message.msg_type
+		if msg_type not in FORWARDABLE_ITCH_TYPES:
+			return False
 
 		# For D/E/X messages, resolve ticker via orderbook
 		if msg_type in ORDERBOOK_RESOLVED_TYPES:
