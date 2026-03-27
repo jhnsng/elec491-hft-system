@@ -18,8 +18,8 @@ reader:
 replay:
   enabled: true
   # start_timestamp: 34200000000000      # nanoseconds since midnight
-  start_time_24h: "09:30:00.000000"    # market-day time, no timezone conversion
-  speed: 1.0
+  #start_time_24h: "09:30:00.000000"    # market-day time, no timezone conversion
+  speed: 0.1
   prestart_burst: true
 
 tickers:
@@ -27,8 +27,8 @@ tickers:
 #  - MSFT
 
 ouch:
-  host: 127.0.0.1
-  port: 9100
+  host: 0.0.0.0
+  port: 9000
   enabled: false         # opt-in; override with --ouch CLI flag
 
 orderbook:
