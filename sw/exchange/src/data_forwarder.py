@@ -61,7 +61,6 @@ class ReplaySettings:
 	enabled: bool = False
 	start_timestamp_ns: Optional[int] = None
 	speed: float = 1.0
-	prestart_burst: bool = True
 
 
 @dataclass(frozen=True)
@@ -242,13 +241,10 @@ def _parse_replay_settings(raw: object) -> Optional[ReplaySettings]:
 	if speed <= 0:
 		raise ValueError("replay.speed must be > 0")
 
-	prestart_burst = bool(raw.get("prestart_burst", True))
-
 	return ReplaySettings(
 		enabled=enabled,
 		start_timestamp_ns=start_timestamp_ns,
 		speed=speed,
-		prestart_burst=prestart_burst,
 	)
 
 
@@ -1190,7 +1186,6 @@ def forward(
 	replay_enabled: bool = False,
 	replay_start_timestamp_ns: Optional[int] = None,
 	replay_speed: float = 1.0,
-	replay_prestart_burst: bool = True,
 ) -> None:
 	# Initialize orderbook if enabled (must be created before TickerFilter)
 	orderbook: Optional[OrderBook] = None
@@ -1249,6 +1244,7 @@ def forward(
 	dropped = 0
 	parsed_bytes = 0
 	forwarded_bytes = 0
+	skipped_before_start = 0
 	last_stats = time.monotonic()
 	last_snapshot = time.monotonic()
 	start_time = last_stats
@@ -1293,6 +1289,22 @@ def forward(
 			if ticker_filter.should_forward(message):
 				ts_ns = extract_itch_timestamp(message)
 
+				# Update orderbook for D/E/X messages (order already exists from Add).
+				# This still runs during replay warm-up so state at start timestamp is accurate.
+				if orderbook_mode and orderbook and msg_type in ("X", "D", "E"):
+					order_id = extract_order_id(msg_type, message.payload)
+					if order_id is not None:
+						if msg_type == "X":  # Cancel
+							shares = extract_shares(msg_type, message.payload)
+							if shares is not None:
+								orderbook.cancel_shares(order_id, shares, ts_ns or 0)
+						elif msg_type == "D":  # Delete
+							orderbook.delete_order(order_id, ts_ns or 0)
+						elif msg_type == "E":  # Execute
+							shares = extract_shares(msg_type, message.payload)
+							if shares is not None:
+								orderbook.execute_shares(order_id, shares, ts_ns or 0)
+
 				if replay_enabled and demo_debugger is None:
 					if ts_ns is None:
 						if not missing_ts_warned:
@@ -1301,12 +1313,12 @@ def forward(
 							)
 							missing_ts_warned = True
 					elif (
-						replay_prestart_burst
-						and replay_start_timestamp_ns is not None
+						replay_start_timestamp_ns is not None
 						and replay_anchor_ts_ns is None
 						and ts_ns < replay_start_timestamp_ns
 					):
-						pass
+						skipped_before_start += 1
+						continue
 					else:
 						if replay_anchor_ts_ns is None:
 							replay_anchor_ts_ns = ts_ns
@@ -1330,21 +1342,6 @@ def forward(
 							sleep_s = target_monotonic_s - time.monotonic()
 							if sleep_s > 0:
 								time.sleep(sleep_s)
-
-				# Update orderbook for D/E/X messages (order already exists from Add)
-				if orderbook_mode and orderbook and msg_type in ("X", "D", "E"):
-					order_id = extract_order_id(msg_type, message.payload)
-					if order_id is not None:
-						if msg_type == "X":  # Cancel
-							shares = extract_shares(msg_type, message.payload)
-							if shares is not None:
-								orderbook.cancel_shares(order_id, shares, ts_ns or 0)
-						elif msg_type == "D":  # Delete
-							orderbook.delete_order(order_id, ts_ns or 0)
-						elif msg_type == "E":  # Execute
-							shares = extract_shares(msg_type, message.payload)
-							if shares is not None:
-								orderbook.execute_shares(order_id, shares, ts_ns or 0)
 
 				try:
 					buffer_queue.put(message.raw)
@@ -1398,9 +1395,10 @@ def forward(
 			if now - last_stats >= cfg.reader.stats_interval:
 				last_ts_str = format_itch_timestamp(last_sent_ts_ns) if last_sent_ts_ns is not None else "-"
 				LOGGER.info(
-					"forwarded=%s dropped=%s queue=%sMB parsed_bytes=%s forwarded_bytes=%s last_ts=%s",
+					"forwarded=%s dropped=%s prestart_skipped=%s queue=%sMB parsed_bytes=%s forwarded_bytes=%s last_ts=%s",
 					forwarded,
 					dropped,
+					skipped_before_start,
 					buffer_queue.size_bytes / (1024 * 1024),
 					parsed_bytes,
 					forwarded_bytes,
@@ -1631,13 +1629,11 @@ def main() -> None:
 	replay_enabled = False
 	replay_start_timestamp_ns: Optional[int] = None
 	replay_speed = 1.0
-	replay_prestart_burst = True
 
 	if cfg.replay is not None:
 		replay_enabled = cfg.replay.enabled
 		replay_start_timestamp_ns = cfg.replay.start_timestamp_ns
 		replay_speed = cfg.replay.speed
-		replay_prestart_burst = cfg.replay.prestart_burst
 
 	# CLI overrides
 	if args.replay:
@@ -1659,7 +1655,7 @@ def main() -> None:
 			LOGGER.info("Replay pacing enabled from first forwarded message at speed %.3fx", replay_speed)
 		else:
 			LOGGER.info(
-				"Replay pacing enabled: burst-before-start until ITCH timestamp=%s (%s), then pace at %.3fx",
+				"Replay pacing enabled: forward only from ITCH timestamp=%s (%s), then pace at %.3fx",
 				replay_start_timestamp_ns,
 				format_itch_timestamp(replay_start_timestamp_ns),
 				replay_speed,
@@ -1708,7 +1704,6 @@ def main() -> None:
 			replay_enabled=replay_enabled,
 			replay_start_timestamp_ns=replay_start_timestamp_ns,
 			replay_speed=replay_speed,
-			replay_prestart_burst=replay_prestart_burst,
 			benchmark_mode=args.benchmark,
 			analytics_mode=args.analytics,
 			analytics_csv=args.analytics_csv,

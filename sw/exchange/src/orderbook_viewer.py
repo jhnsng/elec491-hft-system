@@ -248,6 +248,12 @@ class SnapshotViewer:
 
         self.trend_curve.setData(self._pnl_trend_time_history, smoothed)
 
+        latest_t = self._pnl_trend_time_history[-1]
+        if latest_t <= 120.0:
+            self.trend_plot.setXRange(0.0, 120.0)
+        else:
+            self.trend_plot.setXRange(latest_t - 120.0, latest_t)
+
     def _refresh(self) -> None:
         snapshot = self._read_snapshot()
         if snapshot is None:

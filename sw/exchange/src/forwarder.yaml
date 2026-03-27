@@ -1,6 +1,6 @@
 # itch_file: ..\..\..\gen_test_vectors\outputs\exchange_vectors.bin
-#itch_file: /home/qazed/elec491-hft-system/sw/exchange/07302019.bin
-itch_file: ..\..\..\gen_test_vectors\outputs\exchange_vectors.bin
+itch_file: /home/qazed/elec491-hft-system/sw/exchange/07302019.bin
+# itch_file: ..\..\..\gen_test_vectors\outputs\exchange_vectors.bin
 
 udp:
   host: 192.168.1.123
@@ -18,9 +18,8 @@ reader:
 replay:
   enabled: true
   # start_timestamp: 34200000000000      # nanoseconds since midnight
-  #start_time_24h: "09:30:00.000000"    # market-day time, no timezone conversion
-  speed: 0.1
-  prestart_burst: true
+  start_time_24h: "09:30:00.000000"    # market-day time, no timezone conversion
+  speed: 1.0
 
 tickers:
   - AAPL

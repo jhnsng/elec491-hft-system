@@ -275,20 +275,17 @@ class TestParseReplaySettings:
         assert settings.enabled is True
         assert settings.start_timestamp_ns is None
         assert settings.speed == 1.0
-        assert settings.prestart_burst is True
 
     def test_parse_replay_start_time(self):
         settings = _parse_replay_settings({
             "enabled": True,
             "start_time_24h": "09:30:00.000000",
             "speed": 2.0,
-            "prestart_burst": True,
         })
         assert settings is not None
         assert settings.enabled is True
         assert settings.start_timestamp_ns == 34_200_000_000_000
         assert settings.speed == 2.0
-        assert settings.prestart_burst is True
 
     def test_parse_replay_mutually_exclusive_start_fields(self):
         with pytest.raises(ValueError):
