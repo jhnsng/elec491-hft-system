@@ -1,13 +1,16 @@
 //================================================================================
-// OUCH Inbound Formatter (Modified Internal/Test Format)
-// Enter Order 'O' + Cancel 'X'
-// Avalon-ST output (byte stream), one message == one Avalon-ST "packet"
+// OUCH 5.0 Inbound Formatter (Nasdaq) - Enter Order 'O' + Cancel 'X'
+// Avalon-ST output (byte stream), one OUCH message == one Avalon-ST "packet"
 //
-// NOTE:
-// This version REMOVES the 2-byte appendage-length field from both messages.
-// Therefore this is NOT wire-compliant OUCH 5.0 anymore.
-//   'O' Enter Order = 45 bytes
-//   'X' Cancel Order = 9 bytes
+// Inbound messages implemented:
+//   'O' Enter Order (45 bytes)
+//   'X' Cancel Order (9 bytes)
+//
+// Outbound messages (from exchange) such as 'A','C','E' are NOT generated here
+// They require a separate OUCH outbound parser module
+//
+// Avalon-ST refs:
+// - valid/ready handshaking and packet signals sop/eop are defined by Avalon-ST
 //================================================================================
 `timescale 1ns/1ps
 
@@ -119,9 +122,9 @@ module ouch_inbound (
         output logic [1:0] fe
     );
         if (type_in == 2'b00) begin
-            // 45 bytes -> 12 words, 1 valid bytes in last word -> empty = 3
+            // 45 bytes -> 12 words, 3 valid bytes in last word -> empty = 1
             tw = (ADD_MSG_BYTES + 3) >> 2;
-            fe = 2'd3;
+            fe = 2'd1;
         end else begin
             // 9 bytes -> 3 words, 1 valid byte in last word -> empty = 3
             tw = (CANCEL_MSG_BYTES + 3) >> 2;
@@ -204,6 +207,7 @@ module ouch_inbound (
                 6'd17: return cmd_r.symbol[7:0];
 
                 // Price
+                /*
                 6'd18: return cmd_r.price[63:56];
                 6'd19: return cmd_r.price[55:48];
                 6'd20: return cmd_r.price[47:40];
@@ -212,6 +216,16 @@ module ouch_inbound (
                 6'd23: return cmd_r.price[23:16];
                 6'd24: return cmd_r.price[15:8];
                 6'd25: return cmd_r.price[7:0];
+                */
+
+                6'd18: return cmd_r.price[55:48];
+                6'd19: return cmd_r.price[47:40];
+                6'd20: return cmd_r.price[39:32];
+                6'd21: return cmd_r.price[31:24];
+                6'd22: return cmd_r.price[23:16];
+                6'd23: return cmd_r.price[15:8];
+                6'd24: return cmd_r.price[7:0];
+                6'd25: return 8'h00;
 
                 // Fixed fields
                 6'd26: return TIF_DAY;
