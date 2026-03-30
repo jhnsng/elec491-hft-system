@@ -122,9 +122,9 @@ module ouch_inbound (
         output logic [1:0] fe
     );
         if (type_in == 2'b00) begin
-            // 45 bytes -> 12 words, 3 valid bytes in last word -> empty = 1
+            // 45 bytes -> 12 words, 1 valid bytes in last word -> empty = 3
             tw = (ADD_MSG_BYTES + 3) >> 2;
-            fe = 2'd1;
+            fe = 2'd3;
         end else begin
             // 9 bytes -> 3 words, 1 valid byte in last word -> empty = 3
             tw = (CANCEL_MSG_BYTES + 3) >> 2;

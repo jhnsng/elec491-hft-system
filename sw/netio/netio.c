@@ -216,7 +216,7 @@ int main(void)
 
         clock_gettime(CLOCK_MONOTONIC_RAW, &t_rx_end);
         total_received++;
-        //printf("Packet %llu received, size=%zd\n", total_received, n);
+        printf("Packet %llu received, size=%zd\n", total_received, n);
 
         if (n <= ITCH_PKT_HEADER) {
             printf("Packet too small, ignoring\n");
