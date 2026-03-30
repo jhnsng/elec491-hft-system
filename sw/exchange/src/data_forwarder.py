@@ -1117,8 +1117,9 @@ class UDPForwarder:
 		LOGGER.info("UDP output active: %s:%s", self.settings.host, self.settings.port)
 		self._thread.start()
 
-	def stop(self) -> None:
-		self._stop_event.set()
+	def stop(self, *, drain: bool = True) -> None:
+		if not drain:
+			self._stop_event.set()
 		self.queue.close()
 		self._thread.join()
 		if self._socket:
@@ -1134,7 +1135,9 @@ class UDPForwarder:
 		session_bytes = self.settings.session.encode("ascii")[:10].ljust(10, b" ")
 		
 		try:
-			while not self._stop_event.is_set():
+			while True:
+				if self._stop_event.is_set():
+					break
 				try:
 					item = self.queue.get()
 				except QueueClosed:
@@ -1427,8 +1430,7 @@ def forward(
 				ouch_server.wait_for_idle(timeout=30.0)
 			ouch_server.stop()
 
-		buffer_queue.close()
-		udp_forwarder.stop()
+		udp_forwarder.stop(drain=True)
 		
 		# Log analytics if enabled
 		if analytics_mode and analytics:
