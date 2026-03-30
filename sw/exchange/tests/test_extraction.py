@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+import data_forwarder
 from data_forwarder import (
     Message,
     TickerFilter,
@@ -405,3 +406,124 @@ class TestDemoDebugger:
 
         with pytest.raises(DemoDebuggerNonInteractive):
             debugger.on_forwarded(1)
+
+
+class _RecordingOrderBook:
+    last_instance = None
+
+    def __init__(self, *args, **kwargs):
+        del args, kwargs
+        type(self).last_instance = self
+        self._ticker_by_order_id = {}
+        self.added_order_ids = []
+        self.cancelled_order_ids = []
+        self.deleted_order_ids = []
+        self.executed_order_ids = []
+
+    def get_ticker(self, order_id: int):
+        return self._ticker_by_order_id.get(order_id)
+
+    def add_order(
+        self,
+        order_id: int,
+        ticker: str,
+        side: str,
+        price_ticks: int,
+        shares: int,
+        timestamp_ns: int,
+    ) -> bool:
+        del side, price_ticks, shares, timestamp_ns
+        self.added_order_ids.append(order_id)
+        self._ticker_by_order_id[order_id] = ticker
+        return True
+
+    def cancel_shares(self, order_id: int, cancelled_shares: int, timestamp_ns: int) -> bool:
+        del cancelled_shares, timestamp_ns
+        self.cancelled_order_ids.append(order_id)
+        self._ticker_by_order_id.pop(order_id, None)
+        return True
+
+    def delete_order(self, order_id: int, timestamp_ns: int) -> bool:
+        del timestamp_ns
+        self.deleted_order_ids.append(order_id)
+        self._ticker_by_order_id.pop(order_id, None)
+        return True
+
+    def execute_shares(self, order_id: int, executed_shares: int, timestamp_ns: int) -> bool:
+        del executed_shares, timestamp_ns
+        self.executed_order_ids.append(order_id)
+        self._ticker_by_order_id.pop(order_id, None)
+        return True
+
+    def log_summary(self, logger) -> None:
+        del logger
+
+
+class _NoopUDPForwarder:
+    def __init__(self, _settings, queue):
+        self._queue = queue
+
+    def start(self) -> None:
+        return None
+
+    def stop(self, *, drain: bool = True) -> None:
+        del drain
+        self._queue.close()
+
+
+def _make_add_order_message(order_id: int, ticker: str, timestamp_ns: int) -> Message:
+    payload = bytearray(35)
+    payload[4:10] = timestamp_ns.to_bytes(6, "big")
+    payload[10:18] = order_id.to_bytes(8, "big")
+    payload[18] = ord("B")
+    payload[19:23] = (100).to_bytes(4, "big")
+    payload[23:31] = ticker.encode("ascii").ljust(8, b" ")
+    payload[31:35] = (1_000_000).to_bytes(4, "big")
+    return _make_message("A", bytes(payload))
+
+
+def _make_cancel_message(order_id: int, timestamp_ns: int) -> Message:
+    payload = bytearray(22)
+    payload[4:10] = timestamp_ns.to_bytes(6, "big")
+    payload[10:18] = order_id.to_bytes(8, "big")
+    payload[18:22] = (10).to_bytes(4, "big")
+    return _make_message("X", bytes(payload))
+
+
+class TestReplayFastForward:
+    def test_does_not_update_orderbook_while_skipping_to_start(self, monkeypatch):
+        messages = [
+            _make_add_order_message(order_id=1, ticker="AAPL", timestamp_ns=100),
+            _make_cancel_message(order_id=1, timestamp_ns=120),
+            _make_add_order_message(order_id=2, ticker="AAPL", timestamp_ns=200),
+        ]
+
+        monkeypatch.setattr(data_forwarder, "OrderBook", _RecordingOrderBook)
+        monkeypatch.setattr(data_forwarder, "UDPForwarder", _NoopUDPForwarder)
+        monkeypatch.setattr(data_forwarder, "ITCHStream", lambda *_args, **_kwargs: iter(messages))
+
+        cfg = data_forwarder.ForwarderConfig(
+            itch_file=Path("/tmp/unused.itch"),
+            tickers={"AAPL"},
+            udp=data_forwarder.UDPSettings(host="127.0.0.1", port=9999),
+            reader=data_forwarder.ReaderSettings(
+                chunk_size=1024,
+                max_buffer_bytes=1024 * 1024,
+                stats_interval=9999.0,
+            ),
+        )
+
+        data_forwarder.forward(
+            cfg,
+            orderbook_mode=True,
+            replay_enabled=True,
+            replay_start_timestamp_ns=200,
+            max_messages=1,
+        )
+
+        orderbook = _RecordingOrderBook.last_instance
+        assert orderbook is not None
+        assert orderbook.added_order_ids == [2]
+        assert orderbook.cancelled_order_ids == []
+        assert orderbook.deleted_order_ids == []
+        assert orderbook.executed_order_ids == []

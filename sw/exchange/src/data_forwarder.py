@@ -1266,16 +1266,24 @@ def forward(
 		for message in reader:
 			parsed_bytes += len(message.raw)
 			msg_type = message.msg_type
+			ts_ns = extract_itch_timestamp(message)
+			is_fastforwarding_before_start = (
+				replay_enabled
+				and demo_debugger is None
+				and replay_start_timestamp_ns is not None
+				and replay_anchor_ts_ns is None
+				and ts_ns is not None
+				and ts_ns < replay_start_timestamp_ns
+			)
 
 			# For Add Order messages (A/F), we need to process orderbook BEFORE filtering
 			# so that subsequent D/E/X messages can resolve ticker
-			if orderbook_mode and orderbook and msg_type in ("A", "F"):
+			if orderbook_mode and orderbook and msg_type in ("A", "F") and not is_fastforwarding_before_start:
 				order_id = extract_order_id(msg_type, message.payload)
 				ticker = TICKER_EXTRACTORS.get(msg_type, lambda p: None)(message.payload)
 				side = extract_side(msg_type, message.payload)
 				shares = extract_shares(msg_type, message.payload)
 				price = extract_price_ticks(msg_type, message.payload)
-				ts_ns = extract_itch_timestamp(message)
 
 				if all(v is not None for v in (order_id, ticker, side, shares, price)):
 					assert order_id is not None
@@ -1295,10 +1303,11 @@ def forward(
 						)
 
 			if ticker_filter.should_forward(message):
-				ts_ns = extract_itch_timestamp(message)
+				if is_fastforwarding_before_start:
+					skipped_before_start += 1
+					continue
 
 				# Update orderbook for D/E/X messages (order already exists from Add).
-				# This still runs during replay warm-up so state at start timestamp is accurate.
 				if orderbook_mode and orderbook and msg_type in ("X", "D", "E"):
 					order_id = extract_order_id(msg_type, message.payload)
 					if order_id is not None:
@@ -1320,13 +1329,6 @@ def forward(
 								"Replay pacing: some forwarded messages have no extractable ITCH timestamp; forwarding those immediately"
 							)
 							missing_ts_warned = True
-					elif (
-						replay_start_timestamp_ns is not None
-						and replay_anchor_ts_ns is None
-						and ts_ns < replay_start_timestamp_ns
-					):
-						skipped_before_start += 1
-						continue
 					else:
 						if replay_anchor_ts_ns is None:
 							replay_anchor_ts_ns = ts_ns
