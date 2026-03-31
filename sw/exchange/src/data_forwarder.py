@@ -1734,10 +1734,10 @@ def _log_demo_message(index: int, message: Message) -> None:
 	}
 	extractor = TICKER_EXTRACTORS.get(message.msg_type)
 	ticker = extractor(message.payload) if extractor else None
-	preview = message.raw[: min(16, len(message.raw))].hex()
+	message_hex = message.raw.hex()
 	LOGGER.info(
-		"DEMO message %(index)s type=%(type)s ticker=%(ticker)s len=%(length)s preview=%(preview)s",
-		{**base, "ticker": ticker or "-", "preview": preview},
+		"DEMO message %(index)s type=%(type)s ticker=%(ticker)s len=%(length)s hex=%(hex)s",
+		{**base, "ticker": ticker or "-", "hex": message_hex},
 	)
 
 
