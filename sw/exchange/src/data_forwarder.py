@@ -74,6 +74,13 @@ class OrderBookSettings:
 
 
 @dataclass(frozen=True)
+class OrderIDRewriteSettings:
+	"""Configuration for rewriting forwarded ITCH order IDs."""
+	enabled: bool = False
+	start_id: int = 1
+
+
+@dataclass(frozen=True)
 class ForwarderConfig:
 	itch_file: Path
 	tickers: Set[str]
@@ -82,6 +89,7 @@ class ForwarderConfig:
 	replay: Optional[ReplaySettings] = None
 	orderbook: Optional[OrderBookSettings] = None
 	ouch: Optional[OUCHSettings] = None
+	order_id_rewrite: Optional[OrderIDRewriteSettings] = None
 
 
 ###############################################################################
@@ -115,6 +123,7 @@ def load_config(path: Path) -> ForwarderConfig:
 	replay_cfg = _parse_replay_settings(raw.get("replay"))
 	orderbook_cfg = _parse_orderbook_settings(raw.get("orderbook"))
 	ouch_cfg = _parse_ouch_settings(raw.get("ouch"))
+	order_id_rewrite_cfg = _parse_order_id_rewrite_settings(raw.get("order_id_rewrite"))
 
 	return ForwarderConfig(
 		itch_file=itch_file,
@@ -124,6 +133,7 @@ def load_config(path: Path) -> ForwarderConfig:
 		replay=replay_cfg,
 		orderbook=orderbook_cfg,
 		ouch=ouch_cfg,
+		order_id_rewrite=order_id_rewrite_cfg,
 	)
 
 
@@ -290,6 +300,25 @@ def _parse_orderbook_settings(raw: object) -> Optional[OrderBookSettings]:
 		snapshot_path=snapshot_path,
 		placeholder_seed=placeholder_seed,
 	)
+
+
+def _parse_order_id_rewrite_settings(raw: object) -> Optional[OrderIDRewriteSettings]:
+	"""Parse forwarded order ID rewrite configuration from YAML."""
+	if raw is None or raw is False:
+		return None
+
+	if raw is True:
+		return OrderIDRewriteSettings(enabled=True, start_id=1)
+
+	if not isinstance(raw, dict):
+		raise ValueError("`order_id_rewrite` must be a mapping, boolean, or omitted")
+
+	enabled = bool(raw.get("enabled", True))
+	start_id = int(raw.get("start_id", 1))
+	if start_id <= 0:
+		raise ValueError("order_id_rewrite.start_id must be > 0")
+
+	return OrderIDRewriteSettings(enabled=enabled, start_id=start_id)
 
 
 def _parse_ouch_settings(raw: object) -> Optional[OUCHSettings]:
@@ -477,6 +506,39 @@ TickerExtractor = Callable[[memoryview], Optional[str]]
 FORWARDABLE_ITCH_TYPES = frozenset({"A", "F", "X", "D", "E"})
 
 
+class SequentialOrderIDMapper:
+	"""Map original ITCH order IDs to forwarded sequential IDs."""
+
+	def __init__(self, start_id: int = 1):
+		if start_id <= 0:
+			raise ValueError("start_id must be > 0")
+		self._next_id = start_id
+		self._mapped_ids: Dict[int, int] = {}
+
+	def map_add(self, original_order_id: int) -> int:
+		"""Return an existing mapping or allocate a new sequential ID."""
+		existing = self._mapped_ids.get(original_order_id)
+		if existing is not None:
+			return existing
+
+		mapped_id = self._next_id
+		self._next_id += 1
+		self._mapped_ids[original_order_id] = mapped_id
+		return mapped_id
+
+	def get_mapped(self, original_order_id: int) -> Optional[int]:
+		"""Get mapped forwarded ID for an original order ID."""
+		return self._mapped_ids.get(original_order_id)
+
+	def discard(self, original_order_id: int) -> None:
+		"""Remove mapping for orders that have left the order book."""
+		self._mapped_ids.pop(original_order_id, None)
+
+	@property
+	def size(self) -> int:
+		return len(self._mapped_ids)
+
+
 def extract_order_id(message_type: str, payload: memoryview) -> Optional[int]:
 	"""Extract order ID from ITCH message payload (modular function).
 	
@@ -499,6 +561,22 @@ def extract_order_id(message_type: str, payload: memoryview) -> Optional[int]:
 		except (ValueError, IndexError):
 			return None
 	return None
+
+
+def rewrite_order_id_in_raw_message(raw: bytes, message_type: str, new_order_id: int) -> Optional[bytes]:
+	"""Rewrite order reference number in a raw ITCH message.
+
+	Order Reference Number is at payload[10:18]. Since payload starts at raw[3],
+	the corresponding raw slice is raw[13:21].
+	"""
+	if message_type not in FORWARDABLE_ITCH_TYPES:
+		return None
+	if len(raw) < 21:
+		return None
+
+	updated = bytearray(raw)
+	updated[13:21] = new_order_id.to_bytes(8, "big")
+	return bytes(updated)
 
 
 def extract_price_ticks(message_type: str, payload: memoryview) -> Optional[int]:
@@ -1215,6 +1293,13 @@ def forward(
 	buffer_queue = ByteBufferQueue(cfg.reader.max_buffer_bytes)
 	udp_forwarder = UDPForwarder(cfg.udp, buffer_queue)
 	analytics = OrderIDAnalytics() if analytics_mode else None
+	rewrite_mapper: Optional[SequentialOrderIDMapper] = None
+	if cfg.order_id_rewrite is not None and cfg.order_id_rewrite.enabled:
+		rewrite_mapper = SequentialOrderIDMapper(start_id=cfg.order_id_rewrite.start_id)
+		LOGGER.info(
+			"Order ID rewrite enabled: sequential forwarded IDs start at %s",
+			cfg.order_id_rewrite.start_id,
+		)
 
 	udp_forwarder.start()
 
@@ -1253,6 +1338,7 @@ def forward(
 	parsed_bytes = 0
 	forwarded_bytes = 0
 	skipped_before_start = 0
+	dropped_rewrite_unmapped = 0
 	last_stats = time.monotonic()
 	last_snapshot = time.monotonic()
 	start_time = last_stats
@@ -1307,20 +1393,59 @@ def forward(
 					skipped_before_start += 1
 					continue
 
+				original_order_id = extract_order_id(msg_type, message.payload)
+				outbound_message = message.raw
+
 				# Update orderbook for D/E/X messages (order already exists from Add).
 				if orderbook_mode and orderbook and msg_type in ("X", "D", "E"):
-					order_id = extract_order_id(msg_type, message.payload)
-					if order_id is not None:
+					if original_order_id is not None:
 						if msg_type == "X":  # Cancel
 							shares = extract_shares(msg_type, message.payload)
 							if shares is not None:
-								orderbook.cancel_shares(order_id, shares, ts_ns or 0)
+								orderbook.cancel_shares(original_order_id, shares, ts_ns or 0)
 						elif msg_type == "D":  # Delete
-							orderbook.delete_order(order_id, ts_ns or 0)
+							orderbook.delete_order(original_order_id, ts_ns or 0)
 						elif msg_type == "E":  # Execute
 							shares = extract_shares(msg_type, message.payload)
 							if shares is not None:
-								orderbook.execute_shares(order_id, shares, ts_ns or 0)
+								orderbook.execute_shares(original_order_id, shares, ts_ns or 0)
+
+				if rewrite_mapper is not None:
+					if original_order_id is None:
+						dropped += 1
+						dropped_rewrite_unmapped += 1
+						LOGGER.warning("Dropping %s: missing order ID for rewrite", msg_type)
+						continue
+
+					if msg_type in ("A", "F"):
+						mapped_order_id = rewrite_mapper.map_add(original_order_id)
+					else:
+						mapped_order_id = rewrite_mapper.get_mapped(original_order_id)
+						if mapped_order_id is None:
+							dropped += 1
+							dropped_rewrite_unmapped += 1
+							LOGGER.warning(
+								"Dropping %s for original order_id=%s: no mapped forwarded ID",
+								msg_type,
+								original_order_id,
+							)
+							continue
+
+					rewritten = rewrite_order_id_in_raw_message(
+						message.raw,
+						msg_type,
+						mapped_order_id,
+					)
+					if rewritten is None:
+						dropped += 1
+						dropped_rewrite_unmapped += 1
+						LOGGER.warning(
+							"Dropping %s for original order_id=%s: rewrite failed",
+							msg_type,
+							original_order_id,
+						)
+						continue
+					outbound_message = rewritten
 
 				if replay_enabled and demo_debugger is None:
 					if ts_ns is None:
@@ -1354,12 +1479,23 @@ def forward(
 								time.sleep(sleep_s)
 
 				try:
-					buffer_queue.put(message.raw)
+					buffer_queue.put(outbound_message)
 				except QueueClosed:
 					LOGGER.warning("Queue closed while enqueueing; aborting read loop")
 					break
 				forwarded += 1
-				forwarded_bytes += len(message.raw)
+				forwarded_bytes += len(outbound_message)
+
+				# Remove rewrite mapping after forwarding terminal D/E/X updates.
+				if (
+					rewrite_mapper is not None
+					and orderbook_mode
+					and orderbook is not None
+					and msg_type in ("X", "D", "E")
+					and original_order_id is not None
+					and not orderbook.has_order(original_order_id)
+				):
+					rewrite_mapper.discard(original_order_id)
 				
 				# Track last sent ITCH timestamp for live stats
 				if ts_ns is not None:
@@ -1405,9 +1541,10 @@ def forward(
 			if now - last_stats >= cfg.reader.stats_interval:
 				last_ts_str = format_itch_timestamp(last_sent_ts_ns) if last_sent_ts_ns is not None else "-"
 				LOGGER.info(
-					"forwarded=%s dropped=%s prestart_skipped=%s queue=%sMB parsed_bytes=%s forwarded_bytes=%s last_ts=%s",
+					"forwarded=%s dropped=%s rewrite_dropped=%s prestart_skipped=%s queue=%sMB parsed_bytes=%s forwarded_bytes=%s last_ts=%s",
 					forwarded,
 					dropped,
+					dropped_rewrite_unmapped,
 					skipped_before_start,
 					buffer_queue.size_bytes / (1024 * 1024),
 					parsed_bytes,

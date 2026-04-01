@@ -564,7 +564,6 @@ class OrderBook:
         snapshot = self.get_snapshot()
         with path.open("w", encoding="utf-8") as f:
             json.dump(snapshot, f, indent=2)
-        LOGGER.info("Saved orderbook snapshot to %s", path)
 
     def maybe_save_snapshot(self, path: Path, interval_s: float) -> bool:
         """Save snapshot if interval has elapsed since last save.

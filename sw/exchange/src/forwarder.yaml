@@ -38,3 +38,7 @@ orderbook:
   snapshot_depth: 10
   snapshot_path: ./orderbook_snapshot.json
   placeholder_seed: 491
+
+order_id_rewrite:
+  enabled: true
+  start_id: 1
