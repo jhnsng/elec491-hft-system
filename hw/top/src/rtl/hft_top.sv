@@ -291,6 +291,14 @@ logic [31:0] ord_price_int_w;
 logic [31:0] ord_qty_w;
 logic [31:0] ord_token_id_w;
 logic [15:0] ord_strat_id_w;
+
+// =========================================================
+// Interconnect Wires: OUCH Outbound <-> Algorithm
+// =========================================================
+logic        rpt_valid_w;
+logic [1:0]  rpt_kind_w;
+logic [31:0] rpt_token_id_w;
+logic [31:0] rpt_filled_total_w;
                
 
 //=======================================================
@@ -548,12 +556,12 @@ hft_top_system The_System (
 		.ord_token_id       (ord_token_id_w),
 		
 		// Order Report Feedback
-		.rpt_valid          (1'b0),
-		.rpt_ready          (),
-		.rpt_symbol_id      (16'd0),
-		.rpt_token_id       (32'd0),
-		.rpt_kind           (2'b00),
-		.rpt_filled_total   (32'd0)
+        .rpt_valid          (rpt_valid_w),
+        .rpt_ready          (),                 // Outbound ignores ready
+        .rpt_symbol_id      (16'd1),            // AAPL
+        .rpt_token_id       (rpt_token_id_w),
+        .rpt_kind           (rpt_kind_w),
+        .rpt_filled_total   (rpt_filled_total_w)
 );
 
 	// OUCH modules
@@ -580,6 +588,37 @@ hft_top_system The_System (
     .st_endofpacket    (fifo_fpga_to_hps_in_eop),
     .st_empty          (fifo_fpga_to_hps_in_empty)
 	);
+
+	// =========================================================
+    // OUCH 5.0 Outbound Parser (Ingests Exchange Responses)
+    // =========================================================
+    ouch_outbound u_ouch_outbound (
+        .clk              (CLOCK_50),
+        .rst_n            (KEY[0]),
+
+        // Avalon-ST Sink (From HPS/Exchange)
+        .st_data          (fifo_ouch_ingress_out_data),
+        .st_valid         (fifo_ouch_ingress_out_valid),
+        .st_ready         (fifo_ouch_ingress_out_ready),
+        .st_startofpacket (fifo_ouch_ingress_out_sop),
+        .st_endofpacket   (fifo_ouch_ingress_out_eop),
+        .st_empty         (fifo_ouch_ingress_out_empty),
+
+        // === OUTPUT TO ALGORITHM ===
+        .algo_valid       (rpt_valid_w),
+        .algo_msg_type    (rpt_kind_w),
+        .algo_order_ref   (rpt_token_id_w),
+        .algo_qty         (rpt_filled_total_w),
+
+        // Unused fields
+        .algo_userref     (),
+        .algo_timestamp   (),
+        .algo_price       (),
+        .algo_symbol      (),
+        .algo_side        (),
+        .algo_match_id    (),
+        .algo_reason      ()
+    );
 
 // =========================================================
 // Optional: Keep your Debug Pins Alive for SignalTap
