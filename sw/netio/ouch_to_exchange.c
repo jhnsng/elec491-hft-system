@@ -225,7 +225,7 @@ int main(void)
 
 		uint32_t level   = fifo_read_status[0];  // fill_level [page:0]
 		uint32_t i_stat  = fifo_read_status[1];  // i_status (EMPTY bit=1) [page:0]
-		printf("level=%u i_status=0x%08X empty=%u\n", level, i_stat, (i_stat>>1)&1);
+		// printf("level=%u i_status=0x%08X empty=%u\n", level, i_stat, (i_stat>>1)&1);
 
 
 //		if (meta & META_SOP) {

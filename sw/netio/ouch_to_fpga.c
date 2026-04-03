@@ -65,6 +65,13 @@ static const struct ouch_msg_def ouch_table[] = {
     { 'E', 34 },
 };
 
+static void print_bytes(const uint8_t *buf, int len)
+{
+    for (int i = 0; i < len; i++)
+        printf("%02X ", buf[i]);
+    printf("\n");
+}
+
 static int get_ouch_msg_len(uint8_t type)
 {
     for (size_t i = 0; i < sizeof(ouch_table)/sizeof(ouch_table[0]); i++)
@@ -218,7 +225,7 @@ int main()
     int sock = tcp_server_listen(LISTEN_PORT);
     if (sock < 0) return 1;
 
-    while (1)
+   while (1)
     {
         int n = recv(sock, recv_buf, sizeof(recv_buf), 0);
 
@@ -228,7 +235,8 @@ int main()
             break;
         }
 
-        printf("Received %d bytes\n", n);
+        printf("\nReceived %d bytes:\n", n);
+        print_bytes(recv_buf, n);
 
         memcpy(frame_buf + frame_len, recv_buf, n);
         frame_len += n;
@@ -237,41 +245,52 @@ int main()
 
         while (1)
         {
-            if (frame_len - pos < 1)
+            /* Need at least 2 bytes for length */
+            if (frame_len - pos < 2)
                 break;
 
-            uint8_t type = frame_buf[pos];
+            /* Parse 2-byte big-endian length */
+            uint16_t msg_len = ((uint16_t)frame_buf[pos] << 8) |
+                   (uint16_t)frame_buf[pos + 1];
 
-            int msg_len = get_ouch_msg_len(type);
-
-            if (msg_len < 0)
+            if (msg_len == 0 || msg_len > MAX_OUCH_MSG)
             {
-                printf("Unknown type %c\n", type);
-                pos++;
+                printf("Invalid length %u\n", msg_len);
+                pos += 1;  // resync
                 continue;
             }
 
-            if (frame_len - pos < msg_len)
+            /* Wait until full message is available */
+            if (frame_len - pos < 2 + msg_len)
                 break;
 
+            uint8_t *msg = &frame_buf[pos + 2];
+            uint8_t type = msg[0];
+
+            int expected_len = get_ouch_msg_len(type);
+
+            if (expected_len > 0 && expected_len == msg_len)
+                {
+                    /* Send ONLY payload (no length prefix) to FPGA */
+                    fifo_write_msg(msg, msg_len);
+                }
+            else
+                {
+                    printf("Dropping invalid message\n");
+                }
+
+            printf("Parsed message (type=%c, len=%u):\n", type, msg_len);
+            print_bytes(msg, msg_len);
+
+            /* Counters */
             if (type == 'A') count_A++;
             else if (type == 'C') count_C++;
             else if (type == 'E') count_E++;
 
-            fifo_write_msg(&frame_buf[pos], msg_len);
-
             fifo_msgs++;
             msg_count++;
 
-            if (msg_count % 100 == 0)
-            {
-                printf("Messages processed: %" PRIu64 "\n", msg_count);
-                printf("A=%" PRIu64 " C=%" PRIu64 " E=%" PRIu64 "\n",
-                    count_A, count_C, count_E);
-                printf("FIFO msgs=%" PRIu64 "\n\n", fifo_msgs);
-            }
-
-            pos += msg_len;
+            pos += 2 + msg_len;
         }
 
         if (pos > 0)
