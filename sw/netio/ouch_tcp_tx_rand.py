@@ -26,6 +26,20 @@ def build_ouch_message(msg_type: str) -> bytearray:
     return msg
 
 
+def add_length_prefix(msg: bytearray) -> bytearray:
+    length = len(msg)
+
+    if length > 0xFFFF:
+        raise ValueError("Message too large for 2-byte length")
+
+    prefix = bytearray([
+        (length >> 8) & 0xFF,  # high byte
+        length & 0xFF          # low byte
+    ])
+
+    return prefix + msg
+
+
 def main():
 
     payload = bytearray()
@@ -47,9 +61,12 @@ def main():
         elif t == 'E':
             count_E += 1
 
-        payload.extend(build_ouch_message(t))
+        msg = build_ouch_message(t)
+        framed_msg = add_length_prefix(msg)
 
-    print("Prepared OUCH burst")
+        payload.extend(framed_msg)
+
+    print("Prepared OUCH burst (with length prefix)")
     print("Total messages:", NUM_MESSAGES)
     print("A:", count_A, "C:", count_C, "E:", count_E)
     print("Total payload bytes:", len(payload))
