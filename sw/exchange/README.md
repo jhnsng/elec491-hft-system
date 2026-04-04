@@ -173,6 +173,16 @@ Run demo client in another terminal:
 python src/ouch_demo.py --symbol SPY
 ```
 
+Populate the GUI quickly with synthetic OUCH traffic (no live device required):
+
+```bash
+python src/ouch_demo.py \
+  --symbol SPY \
+  --sender-plugin gui-fill \
+  --plugin-cycles 10 \
+  --delay 0.1
+```
+
 ## CLI Reference (Forwarder)
 
 Core options:

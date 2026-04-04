@@ -16,7 +16,9 @@ import socket
 import struct
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import List
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -29,6 +31,20 @@ from ouch_server import (
     _frame_message,
     recv_framed_message,
 )
+
+
+@dataclass(frozen=True)
+class SenderAction:
+    """One outbound OUCH action in a demo/plugin script."""
+
+    kind: str  # "enter" or "cancel"
+    title: str
+    user_ref: int
+    expected_responses: int
+    side: bytes = b"B"
+    qty: int = 0
+    symbol: str = ""
+    price: int = 0
 
 
 def _price_str(price_ticks: int) -> str:
@@ -102,6 +118,23 @@ def _recv_responses(sock: socket.socket, expected: int, timeout: float = 2.0) ->
     return responses
 
 
+def _connect_ouch(host: str, port: int) -> socket.socket:
+    """Connect to OUCH server or exit with actionable guidance."""
+    print(f"Connecting to OUCH server at {host}:{port} ...")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.connect((host, port))
+    except ConnectionRefusedError:
+        sock.close()
+        raise SystemExit(
+            f"ERROR: Could not connect to {host}:{port}.\n"
+            "Make sure the forwarder is running with --ouch enabled:\n"
+            "  python src/data_forwarder.py --config src/forwarder.yaml --ouch"
+        )
+    print("Connected.\n")
+    return sock
+
+
 def _send_enter_order(
     sock: socket.socket,
     user_ref: int,
@@ -135,20 +168,122 @@ def _send_cancel_order(sock: socket.socket, user_ref: int, qty: int = 0) -> None
     sock.sendall(_frame_message(msg))
 
 
+def _build_gui_fill_plan(symbol: str, start_user_ref: int, cycles: int) -> List[SenderAction]:
+    """Build a sender plan that quickly fills dashboard panels.
+
+    Pattern per cycle:
+    - Aggressive BUY (likely Accepted + Executed)
+    - Passive SELL (Accepted only)
+    - Cancel passive SELL (Canceled)
+    - Aggressive SELL (likely Accepted + Executed)
+
+    If no BBO is available, aggressive orders still contribute Accepted events,
+    and passive+cancel still guarantees Canceled coverage for GUI testing.
+    """
+    if cycles <= 0:
+        raise ValueError("cycles must be > 0")
+    if start_user_ref <= 0:
+        raise ValueError("start_user_ref must be > 0")
+
+    actions: List[SenderAction] = []
+    user_ref = start_user_ref
+
+    for cycle in range(1, cycles + 1):
+        buy_qty = 100 + ((cycle - 1) % 4) * 25
+        passive_qty = 60 + ((cycle - 1) % 3) * 20
+        sell_qty = 80 + ((cycle - 1) % 5) * 10
+
+        actions.append(
+            SenderAction(
+                kind="enter",
+                title=f"Cycle {cycle}: BUY {buy_qty} @ $999.99 (aggressive)",
+                user_ref=user_ref,
+                side=b"B",
+                qty=buy_qty,
+                symbol=symbol,
+                price=9_999_900,
+                expected_responses=2,
+            )
+        )
+        user_ref += 1
+
+        passive_ref = user_ref
+        actions.append(
+            SenderAction(
+                kind="enter",
+                title=f"Cycle {cycle}: SELL {passive_qty} @ $999.99 (passive)",
+                user_ref=passive_ref,
+                side=b"S",
+                qty=passive_qty,
+                symbol=symbol,
+                price=9_999_900,
+                expected_responses=1,
+            )
+        )
+        actions.append(
+            SenderAction(
+                kind="cancel",
+                title=f"Cycle {cycle}: CANCEL passive sell #{passive_ref}",
+                user_ref=passive_ref,
+                qty=0,
+                expected_responses=1,
+            )
+        )
+        user_ref += 1
+
+        actions.append(
+            SenderAction(
+                kind="enter",
+                title=f"Cycle {cycle}: SELL {sell_qty} @ $0.01 (aggressive)",
+                user_ref=user_ref,
+                side=b"S",
+                qty=sell_qty,
+                symbol=symbol,
+                price=100,
+                expected_responses=2,
+            )
+        )
+        user_ref += 1
+
+    return actions
+
+
+def _run_actions(sock: socket.socket, actions: List[SenderAction], delay: float) -> None:
+    """Execute a list of sender actions and print decoded responses."""
+    for idx, action in enumerate(actions, start=1):
+        print("=" * 60)
+        print(f"{idx}. {action.title}")
+        print("=" * 60)
+
+        if action.kind == "enter":
+            _send_enter_order(
+                sock,
+                user_ref=action.user_ref,
+                side=action.side,
+                qty=action.qty,
+                symbol=action.symbol,
+                price=action.price,
+            )
+        elif action.kind == "cancel":
+            _send_cancel_order(sock, user_ref=action.user_ref, qty=action.qty)
+        else:
+            raise ValueError(f"Unsupported sender action kind: {action.kind}")
+
+        time.sleep(delay)
+        timeout = max(0.5, delay + 0.25)
+        responses = _recv_responses(sock, action.expected_responses, timeout=timeout)
+        if responses:
+            for resp in responses:
+                print(_decode_response(resp))
+        else:
+            print("  (no response)")
+        print()
+
+
 def run_demo(host: str, port: int, symbol: str, delay: float = 0.5) -> None:
     """Run a 5-step OUCH demo sequence."""
-    print(f"Connecting to OUCH server at {host}:{port} ...")
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sock.connect((host, port))
-    except ConnectionRefusedError:
-        print(
-            f"ERROR: Could not connect to {host}:{port}.\n"
-            "Make sure the forwarder is running with --ouch enabled:\n"
-            "  python src/data_forwarder.py --config src/forwarder.yaml --ouch"
-        )
-        return
-    print(f"Connected. Running demo for symbol={symbol}\n")
+    sock = _connect_ouch(host, port)
+    print(f"Running classic demo for symbol={symbol}\n")
 
     # Scenario 1: Buy at a very high price (should cross ask -> Accepted + Executed)
     print("=" * 60)
@@ -217,15 +352,79 @@ def run_demo(host: str, port: int, symbol: str, delay: float = 0.5) -> None:
     sock.close()
 
 
+def run_plugin_sender(
+    host: str,
+    port: int,
+    symbol: str,
+    plugin: str,
+    delay: float,
+    cycles: int,
+    start_user_ref: int,
+) -> None:
+    """Run a sender plugin that emits OUCH traffic for GUI testing."""
+    if plugin != "gui-fill":
+        raise SystemExit(f"Unsupported sender plugin: {plugin}")
+
+    actions = _build_gui_fill_plan(symbol=symbol, start_user_ref=start_user_ref, cycles=cycles)
+    sock = _connect_ouch(host, port)
+
+    print(
+        f"Running plugin={plugin} for symbol={symbol}, cycles={cycles}, "
+        f"start_user_ref={start_user_ref}\n"
+    )
+    try:
+        _run_actions(sock, actions, delay=delay)
+    finally:
+        print("=" * 60)
+        print("Plugin sender complete.")
+        print("=" * 60)
+        sock.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="OUCH 5.0 paper trading demo client")
     parser.add_argument("--host", default="127.0.0.1", help="OUCH server host (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=9100, help="OUCH server port (default: 9100)")
+    parser.add_argument("--port", type=int, default=9000, help="OUCH server port (default: 9100)")
     parser.add_argument("--symbol", default="SPY", help="Symbol to trade (default: SPY)")
     parser.add_argument("--delay", type=float, default=0.5,
                         help="Seconds between scenarios (default: 0.5)")
+    parser.add_argument(
+        "--sender-plugin",
+        choices=["none", "gui-fill"],
+        default="none",
+        help=(
+            "Optional synthetic sender plugin. "
+            "Use gui-fill to emit repeated OUCH traffic that populates the dashboard."
+        ),
+    )
+    parser.add_argument(
+        "--plugin-cycles",
+        type=int,
+        default=6,
+        help="Number of gui-fill cycles to run (default: 6)",
+    )
+    parser.add_argument(
+        "--plugin-start-user-ref",
+        type=int,
+        default=1000,
+        help="Starting UserRefNum for plugin sender orders (default: 1000)",
+    )
     args = parser.parse_args()
-    run_demo(args.host, args.port, args.symbol.upper(), delay=args.delay)
+
+    symbol = args.symbol.upper()
+    if args.sender_plugin == "none":
+        run_demo(args.host, args.port, symbol, delay=args.delay)
+        return
+
+    run_plugin_sender(
+        host=args.host,
+        port=args.port,
+        symbol=symbol,
+        plugin=args.sender_plugin,
+        delay=args.delay,
+        cycles=args.plugin_cycles,
+        start_user_ref=args.plugin_start_user_ref,
+    )
 
 
 if __name__ == "__main__":
