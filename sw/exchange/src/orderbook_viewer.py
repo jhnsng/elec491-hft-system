@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Live OUCH efficacy dashboard")
+    parser = argparse.ArgumentParser(description="Live HFT Trading System Dashboard Viewer")
     parser.add_argument(
         "--snapshot-path",
         type=Path,
@@ -32,8 +32,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--history-seconds",
         type=int,
-        default=300,
-        help="Max time window kept for time-series panels in seconds (default: 300)",
+        default=120,
+        help="Max time window kept for time-series panels in seconds (default: 120)",
     )
     return parser.parse_args()
 
@@ -66,7 +66,7 @@ class OuchDashboardViewer:
 
         self.app = QtWidgets.QApplication(sys.argv)
         self.window = QtWidgets.QMainWindow()
-        self.window.setWindowTitle("HFT OUCH Efficacy Dashboard (Process B)")
+        self.window.setWindowTitle("HFT Trading System LiveStats")
         self.window.resize(1200, 820)
 
         root = QtWidgets.QWidget()
