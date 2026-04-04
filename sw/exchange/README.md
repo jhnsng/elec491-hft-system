@@ -76,7 +76,7 @@ python src/orderbook_viewer.py \
 
 Useful viewer options:
 
-- `--history N` (default `600`)
+- `--history-seconds N` (default `300`)
 
 Dashboard highlights:
 

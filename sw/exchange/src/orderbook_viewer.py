@@ -30,16 +30,16 @@ def _parse_args() -> argparse.Namespace:
         help="Refresh interval in milliseconds (default: 200)",
     )
     parser.add_argument(
-        "--history",
+        "--history-seconds",
         type=int,
-        default=600,
-        help="Max chart points kept for top-of-book feeds (default: 600)",
+        default=300,
+        help="Max time window kept for time-series panels in seconds (default: 300)",
     )
     return parser.parse_args()
 
 
 class OuchDashboardViewer:
-    def __init__(self, snapshot_path: Path, refresh_ms: int, history: int):
+    def __init__(self, snapshot_path: Path, refresh_ms: int, history_seconds: int):
         # Lazy import to keep script import-safe in environments without GUI deps.
         from PyQt6 import QtCore, QtWidgets
         import pyqtgraph as pg
@@ -50,7 +50,7 @@ class OuchDashboardViewer:
 
         self.snapshot_path = snapshot_path
         self.refresh_ms = refresh_ms
-        self.history = history
+        self.history_seconds = history_seconds
         self._start_wall_ts: Optional[float] = None
 
         self._last_mtime_ns: Optional[int] = None
@@ -58,8 +58,11 @@ class OuchDashboardViewer:
         self._t_history: List[float] = []
         self._bid_price_history: List[float] = []
         self._ask_price_history: List[float] = []
-        self._bid_qty_history: List[float] = []
-        self._ask_qty_history: List[float] = []
+        self._pnl_time_history: List[float] = []
+        self._hit_rate_time_history: List[float] = []
+        self._pnl_history: List[float] = []
+        self._hit_rate_history: List[float] = []
+        self._last_depth_prices: List[float] = []
 
         self.app = QtWidgets.QApplication(sys.argv)
         self.window = QtWidgets.QMainWindow()
@@ -74,9 +77,8 @@ class OuchDashboardViewer:
         self.bid_label = QtWidgets.QLabel("Bid: -")
         self.ask_label = QtWidgets.QLabel("Ask: -")
         self.spread_label = QtWidgets.QLabel("Spread: -")
-        self.hit_rate_label = QtWidgets.QLabel("Hit Rate: -")
+        self.hit_rate_label = QtWidgets.QLabel("Board Hit Rate: -")
         self.pnl_label = QtWidgets.QLabel("Realized PnL: -")
-        self.latency_label = QtWidgets.QLabel("Latency us (P50/P95/P99): -")
         self.counts_label = QtWidgets.QLabel("Accepted/Executed/Canceled: -")
         self.ts_label = QtWidgets.QLabel("Updated: -")
 
@@ -86,7 +88,6 @@ class OuchDashboardViewer:
             self.spread_label,
             self.hit_rate_label,
             self.pnl_label,
-            self.latency_label,
             self.counts_label,
             self.ts_label,
         ):
@@ -97,41 +98,86 @@ class OuchDashboardViewer:
         metrics.addWidget(self.spread_label, 0, 2)
         metrics.addWidget(self.hit_rate_label, 0, 3)
         metrics.addWidget(self.pnl_label, 1, 0)
-        metrics.addWidget(self.latency_label, 1, 1, 1, 2)
-        metrics.addWidget(self.counts_label, 1, 3)
-        metrics.addWidget(self.ts_label, 2, 0, 1, 4)
+        metrics.addWidget(self.counts_label, 1, 1, 1, 2)
+        metrics.addWidget(self.ts_label, 1, 3)
 
         layout.addLayout(metrics)
 
         plots_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
 
-        self.price_plot = pg.PlotWidget(title="Top of Book Prices")
-        self.price_plot.showGrid(x=True, y=True, alpha=0.2)
-        self.price_plot.setLabel("left", "Price ($)")
-        self.price_plot.setLabel("bottom", "Time (s)")
-        self.price_plot.setBackground("#101417")
-        self.bid_price_curve = self.price_plot.plot(
+        market_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+
+        self.volume_profile_plot = pg.PlotWidget(title="Price by Volume")
+        self.volume_profile_plot.showGrid(x=True, y=True, alpha=0.2)
+        self.volume_profile_plot.setLabel("left", "Price ($)")
+        self.volume_profile_plot.setLabel("bottom", "Volume (shares)")
+        self.volume_profile_plot.setBackground("#101417")
+        self.volume_profile_plot.getViewBox().setMouseEnabled(x=False, y=False)
+        self.bid_profile_bars = pg.BarGraphItem(
+            x0=[],
+            x1=[],
+            y=[],
+            height=[],
+            brush=pg.mkBrush(30, 203, 123, 190),
+            pen=pg.mkPen(color="#1ecb7b", width=1),
+        )
+        self.ask_profile_bars = pg.BarGraphItem(
+            x0=[],
+            x1=[],
+            y=[],
+            height=[],
+            brush=pg.mkBrush(255, 107, 107, 190),
+            pen=pg.mkPen(color="#ff6b6b", width=1),
+        )
+        self.volume_profile_plot.addItem(self.bid_profile_bars)
+        self.volume_profile_plot.addItem(self.ask_profile_bars)
+        market_splitter.addWidget(self.volume_profile_plot)
+
+        self.best_price_plot = pg.PlotWidget(title="Best Bid / Ask Over Time")
+        self.best_price_plot.showGrid(x=True, y=True, alpha=0.2)
+        self.best_price_plot.setLabel("left", "Price ($)")
+        self.best_price_plot.setLabel("bottom", "Time (s)")
+        self.best_price_plot.setBackground("#101417")
+        self.best_bid_curve = self.best_price_plot.plot(
             pen=pg.mkPen(color="#1ecb7b", width=2), name="Best Bid"
         )
-        self.ask_price_curve = self.price_plot.plot(
+        self.best_ask_curve = self.best_price_plot.plot(
             pen=pg.mkPen(color="#ff6b6b", width=2), name="Best Ask"
         )
-        plots_splitter.addWidget(self.price_plot)
+        market_splitter.addWidget(self.best_price_plot)
 
-        self.qty_plot = pg.PlotWidget(title="Top of Book Quantities")
-        self.qty_plot.showGrid(x=True, y=True, alpha=0.2)
-        self.qty_plot.setLabel("left", "Quantity (shares)")
-        self.qty_plot.setLabel("bottom", "Time (s)")
-        self.qty_plot.setBackground("#101417")
-        self.bid_qty_curve = self.qty_plot.plot(
-            pen=pg.mkPen(color="#4cc9f0", width=2), name="Best Bid Qty"
-        )
-        self.ask_qty_curve = self.qty_plot.plot(
-            pen=pg.mkPen(color="#f9c74f", width=2), name="Best Ask Qty"
-        )
-        plots_splitter.addWidget(self.qty_plot)
+        self.volume_profile_plot.setYLink(self.best_price_plot)
+        market_splitter.setSizes([330, 870])
+        plots_splitter.addWidget(market_splitter)
 
-        plots_splitter.setSizes([360, 280])
+        perf_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+
+        self.pnl_plot = pg.PlotWidget(title="Realized PnL Over Time")
+        self.pnl_plot.showGrid(x=True, y=True, alpha=0.2)
+        self.pnl_plot.setLabel("left", "PnL ($)")
+        self.pnl_plot.setLabel("bottom", "Time (s)")
+        self.pnl_plot.setBackground("#101417")
+        self.pnl_curve = self.pnl_plot.plot(
+            pen=pg.mkPen(color="#ef476f", width=2),
+            name="Realized PnL",
+        )
+        perf_splitter.addWidget(self.pnl_plot)
+
+        self.hit_rate_plot = pg.PlotWidget(title="Board Hit Rate Over Time")
+        self.hit_rate_plot.showGrid(x=True, y=True, alpha=0.2)
+        self.hit_rate_plot.setLabel("left", "Hit Rate (%)")
+        self.hit_rate_plot.setLabel("bottom", "Time (s)")
+        self.hit_rate_plot.setBackground("#101417")
+        self.hit_rate_curve = self.hit_rate_plot.plot(
+            pen=pg.mkPen(color="#ffd166", width=2),
+            name="Board Hit Rate",
+        )
+        perf_splitter.addWidget(self.hit_rate_plot)
+
+        perf_splitter.setSizes([560, 560])
+        plots_splitter.addWidget(perf_splitter)
+
+        plots_splitter.setSizes([300, 280])
         layout.addWidget(plots_splitter)
 
         self.recent_orders_label = QtWidgets.QLabel("Recent OUCH Orders (last 10)")
@@ -236,43 +282,164 @@ class OuchDashboardViewer:
                 for col in range(8):
                     self._set_table_item(row, col, "")
 
-    def _update_orderbook_plots(
+    def _update_best_price_plot(
         self,
         rel_t: float,
         best_bid_dollars: Any,
         best_ask_dollars: Any,
-        best_bid_qty: Any,
-        best_ask_qty: Any,
     ) -> None:
         self._t_history.append(rel_t)
         self._bid_price_history.append(self._as_float_or_nan(best_bid_dollars))
         self._ask_price_history.append(self._as_float_or_nan(best_ask_dollars))
-        self._bid_qty_history.append(self._as_float_or_nan(best_bid_qty))
-        self._ask_qty_history.append(self._as_float_or_nan(best_ask_qty))
 
-        if len(self._t_history) > self.history:
-            self._t_history = self._t_history[-self.history :]
-            self._bid_price_history = self._bid_price_history[-self.history :]
-            self._ask_price_history = self._ask_price_history[-self.history :]
-            self._bid_qty_history = self._bid_qty_history[-self.history :]
-            self._ask_qty_history = self._ask_qty_history[-self.history :]
+        cutoff = rel_t - self.history_seconds
+        while self._t_history and self._t_history[0] < cutoff:
+            self._t_history.pop(0)
+            self._bid_price_history.pop(0)
+            self._ask_price_history.pop(0)
 
-        self.bid_price_curve.setData(self._t_history, self._bid_price_history)
-        self.ask_price_curve.setData(self._t_history, self._ask_price_history)
-        self.bid_qty_curve.setData(self._t_history, self._bid_qty_history)
-        self.ask_qty_curve.setData(self._t_history, self._ask_qty_history)
+        self.best_bid_curve.setData(self._t_history, self._bid_price_history)
+        self.best_ask_curve.setData(self._t_history, self._ask_price_history)
 
         if self._t_history:
-            self.price_plot.setXRange(self._t_history[0], self._t_history[-1])
-            self.qty_plot.setXRange(self._t_history[0], self._t_history[-1])
+            self.best_price_plot.setXRange(self._t_history[0], self._t_history[-1])
 
-    def _format_latency_summary(self, latency: Dict[str, Any]) -> str:
-        p50 = latency.get("p50")
-        p95 = latency.get("p95")
-        p99 = latency.get("p99")
-        if p50 is None and p95 is None and p99 is None:
-            return "-"
-        return f"{p50 if p50 is not None else '-'} / {p95 if p95 is not None else '-'} / {p99 if p99 is not None else '-'}"
+        line_prices = [v for v in self._bid_price_history + self._ask_price_history if not math.isnan(v)]
+        price_values = line_prices + self._last_depth_prices
+        if price_values:
+            p_min = min(price_values)
+            p_max = max(price_values)
+            pad = max((p_max - p_min) * 0.08, 0.01)
+            self.best_price_plot.setYRange(p_min - pad, p_max + pad)
+
+    def _update_price_volume_plot(self, depth: Any) -> None:
+        if not isinstance(depth, dict):
+            self._last_depth_prices = []
+            return
+
+        bid_levels = depth.get("bids", [])
+        ask_levels = depth.get("asks", [])
+        if not isinstance(bid_levels, list):
+            bid_levels = []
+        if not isinstance(ask_levels, list):
+            ask_levels = []
+
+        bid_prices: List[float] = []
+        bid_volumes: List[float] = []
+        ask_prices: List[float] = []
+        ask_volumes: List[float] = []
+
+        for level in bid_levels:
+            if not isinstance(level, dict):
+                continue
+            price = self._as_float_or_nan(level.get("price_dollars"))
+            volume = self._as_float_or_nan(level.get("total_shares"))
+            if math.isnan(price) or math.isnan(volume):
+                continue
+            bid_prices.append(price)
+            bid_volumes.append(max(0.0, volume))
+
+        for level in ask_levels:
+            if not isinstance(level, dict):
+                continue
+            price = self._as_float_or_nan(level.get("price_dollars"))
+            volume = self._as_float_or_nan(level.get("total_shares"))
+            if math.isnan(price) or math.isnan(volume):
+                continue
+            ask_prices.append(price)
+            ask_volumes.append(max(0.0, volume))
+
+        all_prices = bid_prices + ask_prices
+        if not all_prices:
+            self._last_depth_prices = []
+            self.bid_profile_bars.setOpts(x0=[], x1=[], y=[], height=[])
+            self.ask_profile_bars.setOpts(x0=[], x1=[], y=[], height=[])
+            return
+
+        self._last_depth_prices = all_prices
+
+        sorted_prices = sorted(set(all_prices))
+        if len(sorted_prices) >= 2:
+            price_step = min(
+                max(sorted_prices[i + 1] - sorted_prices[i], 1e-6)
+                for i in range(len(sorted_prices) - 1)
+            )
+        else:
+            price_step = max(sorted_prices[0] * 0.0002, 0.01)
+
+        bar_height = max(price_step * 0.75, 0.002)
+        offset = bar_height * 0.55
+
+        bid_y = [p - offset for p in bid_prices]
+        ask_y = [p + offset for p in ask_prices]
+
+        self.bid_profile_bars.setOpts(
+            x0=[0.0] * len(bid_prices),
+            x1=bid_volumes,
+            y=bid_y,
+            height=[bar_height] * len(bid_prices),
+        )
+        self.ask_profile_bars.setOpts(
+            x0=[0.0] * len(ask_prices),
+            x1=ask_volumes,
+            y=ask_y,
+            height=[bar_height] * len(ask_prices),
+        )
+
+        max_volume = max(bid_volumes + ask_volumes + [1.0])
+        self.volume_profile_plot.setXRange(0.0, max_volume * 1.12)
+
+    def _update_performance_plot(self, realized_pnl: Any, hit_rate_pct: Any) -> None:
+        rel_t = self._t_history[-1] if self._t_history else 0.0
+
+        if isinstance(realized_pnl, (int, float)):
+            self._pnl_time_history.append(rel_t)
+            self._pnl_history.append(float(realized_pnl))
+        else:
+            self._pnl_time_history.append(rel_t)
+            self._pnl_history.append(float("nan"))
+
+        if isinstance(hit_rate_pct, (int, float)):
+            self._hit_rate_time_history.append(rel_t)
+            self._hit_rate_history.append(float(hit_rate_pct))
+        else:
+            self._hit_rate_time_history.append(rel_t)
+            self._hit_rate_history.append(float("nan"))
+
+        cutoff = rel_t - self.history_seconds
+        while self._pnl_time_history and self._pnl_time_history[0] < cutoff:
+            self._pnl_time_history.pop(0)
+            self._pnl_history.pop(0)
+        while self._hit_rate_time_history and self._hit_rate_time_history[0] < cutoff:
+            self._hit_rate_time_history.pop(0)
+            self._hit_rate_history.pop(0)
+
+        self.pnl_curve.setData(self._pnl_time_history, self._pnl_history)
+        self.hit_rate_curve.setData(self._hit_rate_time_history, self._hit_rate_history)
+
+        if self._pnl_time_history:
+            self.pnl_plot.setXRange(self._pnl_time_history[0], self._pnl_time_history[-1])
+        if self._hit_rate_time_history:
+            self.hit_rate_plot.setXRange(self._hit_rate_time_history[0], self._hit_rate_time_history[-1])
+
+        pnl_values = [v for v in self._pnl_history if not math.isnan(v)]
+        if pnl_values:
+            pnl_min = min(pnl_values)
+            pnl_max = max(pnl_values)
+            pnl_pad = max((pnl_max - pnl_min) * 0.12, 0.5)
+            self.pnl_plot.setYRange(pnl_min - pnl_pad, pnl_max + pnl_pad)
+
+        hit_values = [v for v in self._hit_rate_history if not math.isnan(v)]
+        if hit_values:
+            hr_min = min(hit_values)
+            hr_max = max(hit_values)
+            hr_span = max(hr_max - hr_min, 8.0)
+            hr_center = (hr_min + hr_max) / 2.0
+            lo = max(0.0, hr_center - hr_span * 0.6)
+            hi = min(100.0, hr_center + hr_span * 0.6)
+            self.hit_rate_plot.setYRange(lo, hi)
+        else:
+            self.hit_rate_plot.setYRange(0.0, 100.0)
 
     def _refresh(self) -> None:
         snapshot = self._read_snapshot()
@@ -306,13 +473,14 @@ class OuchDashboardViewer:
         else:
             rel_t = 0.0
 
-        self._update_orderbook_plots(rel_t, best_bid, best_ask, best_bid_qty, best_ask_qty)
+        self._update_price_volume_plot(snapshot.get("depth"))
+        self._update_best_price_plot(rel_t, best_bid, best_ask)
 
         hit_rate_pct = metrics.get("hit_rate_pct")
         if isinstance(hit_rate_pct, (int, float)):
-            self.hit_rate_label.setText(f"Hit Rate: {float(hit_rate_pct):.2f}%")
+            self.hit_rate_label.setText(f"Board Hit Rate: {float(hit_rate_pct):.2f}%")
         else:
-            self.hit_rate_label.setText("Hit Rate: -")
+            self.hit_rate_label.setText("Board Hit Rate: -")
 
         realized_pnl = metrics.get("realized_pnl_dollars")
         if isinstance(realized_pnl, (int, float)):
@@ -320,13 +488,7 @@ class OuchDashboardViewer:
         else:
             self.pnl_label.setText("Realized PnL: -")
 
-        latency = metrics.get("latency_us") if isinstance(metrics, dict) else {}
-        if isinstance(latency, dict):
-            self.latency_label.setText(
-                f"Latency us (P50/P95/P99): {self._format_latency_summary(latency)}"
-            )
-        else:
-            self.latency_label.setText("Latency us (P50/P95/P99): -")
+        self._update_performance_plot(realized_pnl, hit_rate_pct)
 
         accepted = metrics.get("accepted_orders") if isinstance(metrics, dict) else None
         executed = metrics.get("executed_orders") if isinstance(metrics, dict) else None
@@ -364,11 +526,11 @@ def main() -> None:
     args = _parse_args()
     if args.refresh_ms <= 0:
         raise SystemExit("--refresh-ms must be > 0")
-    if args.history <= 0:
-        raise SystemExit("--history must be > 0")
+    if args.history_seconds <= 0:
+        raise SystemExit("--history-seconds must be > 0")
 
     try:
-        viewer = OuchDashboardViewer(args.snapshot_path, args.refresh_ms, args.history)
+        viewer = OuchDashboardViewer(args.snapshot_path, args.refresh_ms, args.history_seconds)
     except ImportError as exc:
         raise SystemExit(
             "GUI dependencies missing. Install with: pip install pyqtgraph PyQt6"

@@ -19,8 +19,8 @@ reader:
 replay:
   enabled: true
   # start_timestamp: 34200000000000      # nanoseconds since midnight
-  # start_time_24h: "09:30:00.000000"    # market-day time, no timezone conversion
-  speed: 100.0
+  start_time_24h: "09:30:00.000000"    # market-day time, no timezone conversion
+  speed: 1.0
 
 tickers:
   - SPY
