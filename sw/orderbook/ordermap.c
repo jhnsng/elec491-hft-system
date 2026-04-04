@@ -110,3 +110,25 @@ ob_update order_delete(uint64_t id) {
     
     return packed;
 }
+
+typedef struct {
+    ob_update del_upd;  // delete old order
+    ob_update add_upd;  // add new order
+} ob_replace_updates;
+
+ob_replace_updates order_replace(uint64_t old_id,
+                                 uint64_t new_id,
+                                 uint32_t new_price,
+                                 uint32_t new_qty)
+{
+    ob_update del_upd = order_delete(old_id);
+
+    old_id = be64toh_manual(old_id);
+    order_entry_t *old_e = &order_map[old_id];
+    uint8_t side_char = old_e->side ? 'S' : 'B';
+
+    ob_update add_upd = order_add(new_id, new_price, new_qty, side_char);
+
+    ob_replace_updates res = { del_upd, add_upd };
+    return res;
+}
