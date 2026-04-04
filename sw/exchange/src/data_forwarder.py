@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import logging
 import re
 import statistics
@@ -27,6 +28,7 @@ except ImportError as exc:  # pragma: no cover - dependency hint for user
 
 # Local imports
 from orderbook import OrderBook
+from ouch_metrics import OUCHMetricsTracker
 from ouch_server import OUCHServer, OUCHSettings
 
 
@@ -70,7 +72,6 @@ class OrderBookSettings:
 	snapshot_interval_s: float = 5.0  # Seconds between periodic snapshots
 	snapshot_depth: int = 10  # Number of price levels per side in snapshots
 	snapshot_path: Optional[Path] = None  # Path for snapshot output (None = no file output)
-	placeholder_seed: int = 491  # Seed used for deterministic placeholder UI fields
 
 
 @dataclass(frozen=True)
@@ -291,14 +292,12 @@ def _parse_orderbook_settings(raw: object) -> Optional[OrderBookSettings]:
 
 	snapshot_path_raw = raw.get("snapshot_path")
 	snapshot_path = Path(snapshot_path_raw) if snapshot_path_raw else None
-	placeholder_seed = int(raw.get("placeholder_seed", 491))
 
 	return OrderBookSettings(
 		max_orders=max_orders,
 		snapshot_interval_s=snapshot_interval_s,
 		snapshot_depth=snapshot_depth,
 		snapshot_path=snapshot_path,
-		placeholder_seed=placeholder_seed,
 	)
 
 
@@ -1250,6 +1249,26 @@ class UDPForwarder:
 			)
 
 
+def _build_runtime_snapshot(
+	orderbook: OrderBook,
+	ouch_metrics: Optional[OUCHMetricsTracker],
+) -> Dict[str, object]:
+	"""Build one GUI-facing snapshot from market and OUCH metrics sources."""
+	snapshot = orderbook.get_snapshot()
+	if ouch_metrics is not None:
+		snapshot["ouch"] = ouch_metrics.get_snapshot()
+	return snapshot
+
+
+def _save_runtime_snapshot(path: Path, snapshot: Dict[str, object]) -> None:
+	"""Persist snapshot atomically so the viewer never sees partial JSON."""
+	path.parent.mkdir(parents=True, exist_ok=True)
+	tmp_path = path.with_name(path.name + ".tmp")
+	with tmp_path.open("w", encoding="utf-8") as handle:
+		json.dump(snapshot, handle, indent=2)
+	tmp_path.replace(path)
+
+
 ###############################################################################
 # Forwarder caller
 ###############################################################################
@@ -1280,13 +1299,14 @@ def forward(
 		orderbook = OrderBook(
 			max_orders=ob_settings.max_orders,
 			snapshot_depth=ob_settings.snapshot_depth,
-			placeholder_seed=ob_settings.placeholder_seed,
 		)
 		LOGGER.info(
 			"Orderbook initialized: max_orders=%s snapshot_depth=%s",
 			ob_settings.max_orders,
 			ob_settings.snapshot_depth,
 		)
+
+	ouch_metrics: Optional[OUCHMetricsTracker] = OUCHMetricsTracker() if ouch_enabled else None
 
 	# TickerFilter needs orderbook reference for D/E/X ticker resolution
 	ticker_filter = TickerFilter(cfg.tickers, orderbook=orderbook)
@@ -1307,7 +1327,7 @@ def forward(
 	ouch_server: Optional[OUCHServer] = None
 	if ouch_enabled and orderbook is not None:
 		ouch_settings = cfg.ouch or OUCHSettings(enabled=True)
-		ouch_server = OUCHServer(ouch_settings, orderbook)
+		ouch_server = OUCHServer(ouch_settings, orderbook, metrics_tracker=ouch_metrics)
 		ouch_server.start()
 
 	# In OUCH + replay mode, wait for a client before replay pacing begins.
@@ -1556,7 +1576,8 @@ def forward(
 			# Periodic orderbook snapshots
 			if orderbook_mode and orderbook and orderbook_snapshot_path:
 				if now - last_snapshot >= orderbook_snapshot_interval:
-					orderbook.save_snapshot(orderbook_snapshot_path)
+					snapshot = _build_runtime_snapshot(orderbook, ouch_metrics)
+					_save_runtime_snapshot(orderbook_snapshot_path, snapshot)
 					last_snapshot = now
 
 	except KeyboardInterrupt:
@@ -1579,7 +1600,8 @@ def forward(
 		if orderbook_mode and orderbook:
 			orderbook.log_summary(LOGGER)
 			if orderbook_snapshot_path:
-				orderbook.save_snapshot(orderbook_snapshot_path)
+				snapshot = _build_runtime_snapshot(orderbook, ouch_metrics)
+				_save_runtime_snapshot(orderbook_snapshot_path, snapshot)
 				LOGGER.info("Final orderbook snapshot saved to: %s", orderbook_snapshot_path)
 		
 		if benchmark_mode:

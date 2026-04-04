@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
-"""Minimal high-performance orderbook snapshot viewer (Process B).
+"""OUCH-centric exchange dashboard viewer (Process B).
 
 Run this as a separate process from data_forwarder to avoid impacting
 forwarding latency/jitter in the hot path.
-
-Example:
-  python src/data_forwarder.py --config src/forwarder.yaml --orderbook
-  python src/orderbook_viewer.py --snapshot-path src/orderbook_snapshot.json
 """
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -19,12 +16,12 @@ from typing import Any, Dict, List, Optional
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Live orderbook snapshot viewer")
+    parser = argparse.ArgumentParser(description="Live OUCH efficacy dashboard")
     parser.add_argument(
         "--snapshot-path",
         type=Path,
         default=Path(__file__).with_name("orderbook_snapshot.json"),
-        help="Path to orderbook snapshot JSON file",
+        help="Path to runtime snapshot JSON file",
     )
     parser.add_argument(
         "--refresh-ms",
@@ -36,19 +33,13 @@ def _parse_args() -> argparse.Namespace:
         "--history",
         type=int,
         default=600,
-        help="Max chart points kept for fallback history mode (default: 600)",
-    )
-    parser.add_argument(
-        "--trend-window",
-        type=int,
-        default=25,
-        help="Smoothing window size for PnL trend graph (default: 25)",
+        help="Max chart points kept for top-of-book feeds (default: 600)",
     )
     return parser.parse_args()
 
 
-class SnapshotViewer:
-    def __init__(self, snapshot_path: Path, refresh_ms: int, history: int, trend_window: int):
+class OuchDashboardViewer:
+    def __init__(self, snapshot_path: Path, refresh_ms: int, history: int):
         # Lazy import to keep script import-safe in environments without GUI deps.
         from PyQt6 import QtCore, QtWidgets
         import pyqtgraph as pg
@@ -60,88 +51,113 @@ class SnapshotViewer:
         self.snapshot_path = snapshot_path
         self.refresh_ms = refresh_ms
         self.history = history
-        self.trend_window = trend_window
-        self._sample_dt_s = self.refresh_ms / 1000.0
-        self._last_snapshot_wall_ts: Optional[float] = None
+        self._start_wall_ts: Optional[float] = None
 
         self._last_mtime_ns: Optional[int] = None
-        self._pnl_history: List[float] = []  # Rolling PnL datapoints
-        self._pnl_time_history: List[float] = []
-        self._snapshot_buffer: List[float] = []  # Buffer for smoothing snapshots
-        self._pnl_trend_time_history: List[float] = []
-        self._pnl_trend_history: List[float] = []  # Anchored since viewer start
-        self._pnl_anchor: Optional[float] = None
-        self._hit_rate_history: List[float] = []
-        self._hit_rate_time_history: List[float] = []
+
+        self._t_history: List[float] = []
+        self._bid_price_history: List[float] = []
+        self._ask_price_history: List[float] = []
+        self._bid_qty_history: List[float] = []
+        self._ask_qty_history: List[float] = []
 
         self.app = QtWidgets.QApplication(sys.argv)
         self.window = QtWidgets.QMainWindow()
-        self.window.setWindowTitle("HFT Orderbook Viewer (Process B)")
-        self.window.resize(1080, 720)
+        self.window.setWindowTitle("HFT OUCH Efficacy Dashboard (Process B)")
+        self.window.resize(1200, 820)
 
         root = QtWidgets.QWidget()
         self.window.setCentralWidget(root)
         layout = QtWidgets.QVBoxLayout(root)
 
-        metrics = QtWidgets.QHBoxLayout()
+        metrics = QtWidgets.QGridLayout()
         self.bid_label = QtWidgets.QLabel("Bid: -")
         self.ask_label = QtWidgets.QLabel("Ask: -")
         self.spread_label = QtWidgets.QLabel("Spread: -")
-        self.pnl_label = QtWidgets.QLabel("PnL: -")
         self.hit_rate_label = QtWidgets.QLabel("Hit Rate: -")
+        self.pnl_label = QtWidgets.QLabel("Realized PnL: -")
+        self.latency_label = QtWidgets.QLabel("Latency us (P50/P95/P99): -")
+        self.counts_label = QtWidgets.QLabel("Accepted/Executed/Canceled: -")
         self.ts_label = QtWidgets.QLabel("Updated: -")
 
         for w in (
             self.bid_label,
             self.ask_label,
             self.spread_label,
-            self.pnl_label,
             self.hit_rate_label,
+            self.pnl_label,
+            self.latency_label,
+            self.counts_label,
             self.ts_label,
         ):
             w.setStyleSheet("font-size: 14px; padding: 4px 8px;")
-            metrics.addWidget(w)
+
+        metrics.addWidget(self.bid_label, 0, 0)
+        metrics.addWidget(self.ask_label, 0, 1)
+        metrics.addWidget(self.spread_label, 0, 2)
+        metrics.addWidget(self.hit_rate_label, 0, 3)
+        metrics.addWidget(self.pnl_label, 1, 0)
+        metrics.addWidget(self.latency_label, 1, 1, 1, 2)
+        metrics.addWidget(self.counts_label, 1, 3)
+        metrics.addWidget(self.ts_label, 2, 0, 1, 4)
 
         layout.addLayout(metrics)
 
-        # Charts in a splitter so user can resize
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        
-        self.plot = pg.PlotWidget(title="PnL Cumulative")
-        self.plot.showGrid(x=True, y=True, alpha=0.2)
-        self.plot.setLabel("left", "Cumulative PnL ($)")
-        self.plot.setLabel("bottom", "Time (s)")
-        self.plot.setBackground("#111418")
-        self.curve = self.plot.plot(pen=pg.mkPen(color="#4cc9f0", width=2))
-        splitter.addWidget(self.plot)
+        plots_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
 
-        self.hist_plot = pg.PlotWidget(title="PnL Distribution")
-        self.hist_plot.showGrid(x=True, y=True, alpha=0.2)
-        self.hist_plot.setLabel("left", "Frequency")
-        self.hist_plot.setLabel("bottom", "PnL Bucket ($)")
-        self.hist_plot.setBackground("#111418")
-        self.hist_bars = pg.BarGraphItem(x=[], height=[], width=[], brush=pg.mkBrush(color="#06ffa5", alpha=180))
-        self.hist_plot.addItem(self.hist_bars)
-        splitter.addWidget(self.hist_plot)
+        self.price_plot = pg.PlotWidget(title="Top of Book Prices")
+        self.price_plot.showGrid(x=True, y=True, alpha=0.2)
+        self.price_plot.setLabel("left", "Price ($)")
+        self.price_plot.setLabel("bottom", "Time (s)")
+        self.price_plot.setBackground("#101417")
+        self.bid_price_curve = self.price_plot.plot(
+            pen=pg.mkPen(color="#1ecb7b", width=2), name="Best Bid"
+        )
+        self.ask_price_curve = self.price_plot.plot(
+            pen=pg.mkPen(color="#ff6b6b", width=2), name="Best Ask"
+        )
+        plots_splitter.addWidget(self.price_plot)
 
-        self.hit_plot = pg.PlotWidget(title="Hit Rate Over Time")
-        self.hit_plot.showGrid(x=True, y=True, alpha=0.2)
-        self.hit_plot.setLabel("left", "Hit Rate (%)")
-        self.hit_plot.setLabel("bottom", "Time (s)")
-        self.hit_plot.setBackground("#111418")
-        self.hit_curve = self.hit_plot.plot(pen=pg.mkPen(color="#ffd166", width=2))
-        splitter.addWidget(self.hit_plot)
+        self.qty_plot = pg.PlotWidget(title="Top of Book Quantities")
+        self.qty_plot.showGrid(x=True, y=True, alpha=0.2)
+        self.qty_plot.setLabel("left", "Quantity (shares)")
+        self.qty_plot.setLabel("bottom", "Time (s)")
+        self.qty_plot.setBackground("#101417")
+        self.bid_qty_curve = self.qty_plot.plot(
+            pen=pg.mkPen(color="#4cc9f0", width=2), name="Best Bid Qty"
+        )
+        self.ask_qty_curve = self.qty_plot.plot(
+            pen=pg.mkPen(color="#f9c74f", width=2), name="Best Ask Qty"
+        )
+        plots_splitter.addWidget(self.qty_plot)
 
-        splitter.setSizes([450, 450, 350])
-        layout.addWidget(splitter)
+        plots_splitter.setSizes([360, 280])
+        layout.addWidget(plots_splitter)
 
-        self.trend_plot = pg.PlotWidget(title="PnL Trend (Smoothed)")
-        self.trend_plot.showGrid(x=True, y=True, alpha=0.2)
-        self.trend_plot.setLabel("left", "Smoothed PnL ($)")
-        self.trend_plot.setLabel("bottom", "Time (s)")
-        self.trend_plot.setBackground("#111418")
-        self.trend_curve = self.trend_plot.plot(pen=pg.mkPen(color="#ef476f", width=2))
-        layout.addWidget(self.trend_plot)
+        self.recent_orders_label = QtWidgets.QLabel("Recent OUCH Orders (last 10)")
+        self.recent_orders_label.setStyleSheet("font-size: 14px; font-weight: 600; padding: 6px 8px;")
+        layout.addWidget(self.recent_orders_label)
+
+        self.orders_table = QtWidgets.QTableWidget(10, 8)
+        self.orders_table.setHorizontalHeaderLabels(
+            [
+                "Time",
+                "Symbol",
+                "Side",
+                "Qty",
+                "Limit Px",
+                "Status",
+                "Exec Qty",
+                "Exec Px",
+            ]
+        )
+        self.orders_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.orders_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
+        self.orders_table.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self.orders_table.verticalHeader().setVisible(False)
+        self.orders_table.horizontalHeader().setStretchLastSection(True)
+        self.orders_table.setAlternatingRowColors(True)
+        layout.addWidget(self.orders_table)
 
         self.status = QtWidgets.QLabel("Waiting for snapshot file...")
         self.status.setStyleSheet("font-size: 12px; color: #bcc3cf; padding: 4px 8px;")
@@ -176,83 +192,87 @@ class SnapshotViewer:
         except (TypeError, ValueError):
             return "-"
 
-    def _update_histogram(self) -> None:
-        """Compute and update PnL distribution histogram."""
-        if not self._pnl_history or len(self._pnl_history) < 2:
-            return
+    def _format_ns_since_midnight(self, ts_ns: Any) -> str:
+        if not isinstance(ts_ns, int):
+            return "-"
+        if ts_ns < 0:
+            return "-"
+        total_seconds, nanos = divmod(ts_ns, 1_000_000_000)
+        hours, rem = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(rem, 60)
+        millis = nanos // 1_000_000
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{millis:03d}"
 
-        import numpy as np
-        
-        # Compute histogram with 15 bins
-        counts, bin_edges = np.histogram(self._pnl_history, bins=15)
-        
-        # Bin centers for x-axis
-        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-        bin_width = bin_edges[1] - bin_edges[0]
-        
-        # Update bar graph
-        self.hist_bars.setOpts(
-            x=bin_centers,
-            height=counts,
-            width=bin_width * 0.95,  # Slight gap between bars
-        )
-        
-        # Auto-range both axes
-        self.hist_plot.autoRange()
+    def _as_float_or_nan(self, value: Any) -> float:
+        if value is None:
+            return float("nan")
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float("nan")
 
-    def _update_hit_rate_plot(self) -> None:
-        """Update hit-rate series and keep a tight y-range for visible deviations."""
-        if not self._hit_rate_history or not self._hit_rate_time_history:
-            self.hit_curve.setData([], [])
-            return
+    def _set_table_item(self, row: int, col: int, value: str) -> None:
+        item = self.QtWidgets.QTableWidgetItem(value)
+        self.orders_table.setItem(row, col, item)
 
-        self.hit_curve.setData(self._hit_rate_time_history, self._hit_rate_history)
+    def _update_recent_orders(self, orders: List[Dict[str, Any]]) -> None:
+        row_count = max(10, len(orders))
+        self.orders_table.setRowCount(row_count)
 
-        # Keep a moving time window driven by actual retained history.
-        self.hit_plot.setXRange(
-            self._hit_rate_time_history[0],
-            self._hit_rate_time_history[-1],
-        )
+        for row in range(row_count):
+            if row < len(orders):
+                entry = orders[row]
+                self._set_table_item(row, 0, self._format_ns_since_midnight(entry.get("timestamp_ns")))
+                self._set_table_item(row, 1, str(entry.get("symbol", "-")))
+                self._set_table_item(row, 2, str(entry.get("side", "-")))
+                self._set_table_item(row, 3, str(entry.get("quantity", "-")))
+                self._set_table_item(row, 4, self._format_price(entry.get("limit_price_dollars")))
+                self._set_table_item(row, 5, str(entry.get("status", "-")))
 
-        min_hr = min(self._hit_rate_history)
-        max_hr = max(self._hit_rate_history)
-        span = max_hr - min_hr
-        if span < 0.5:
-            # Avoid a visually flat line when variance is tiny.
-            center = (max_hr + min_hr) / 2.0
-            self.hit_plot.setYRange(center - 1.0, center + 1.0)
-        else:
-            pad = max(span * 0.15, 0.25)
-            self.hit_plot.setYRange(min_hr - pad, max_hr + pad)
+                exec_qty = entry.get("executed_qty")
+                self._set_table_item(row, 6, str(exec_qty) if exec_qty is not None else "-")
+                self._set_table_item(row, 7, self._format_price(entry.get("execution_price_dollars")))
+            else:
+                for col in range(8):
+                    self._set_table_item(row, col, "")
 
-    def _update_pnl_trend_plot(self) -> None:
-        """Plot smoothed anchored PnL trend since viewer start."""
-        if not self._pnl_trend_history or not self._pnl_trend_time_history:
-            self.trend_curve.setData([], [])
-            return
+    def _update_orderbook_plots(
+        self,
+        rel_t: float,
+        best_bid_dollars: Any,
+        best_ask_dollars: Any,
+        best_bid_qty: Any,
+        best_ask_qty: Any,
+    ) -> None:
+        self._t_history.append(rel_t)
+        self._bid_price_history.append(self._as_float_or_nan(best_bid_dollars))
+        self._ask_price_history.append(self._as_float_or_nan(best_ask_dollars))
+        self._bid_qty_history.append(self._as_float_or_nan(best_bid_qty))
+        self._ask_qty_history.append(self._as_float_or_nan(best_ask_qty))
 
-        if len(self._pnl_trend_history) < 2:
-            self.trend_curve.setData([self._pnl_trend_time_history[0]], [self._pnl_trend_history[0]])
-            return
+        if len(self._t_history) > self.history:
+            self._t_history = self._t_history[-self.history :]
+            self._bid_price_history = self._bid_price_history[-self.history :]
+            self._ask_price_history = self._ask_price_history[-self.history :]
+            self._bid_qty_history = self._bid_qty_history[-self.history :]
+            self._ask_qty_history = self._ask_qty_history[-self.history :]
 
-        window = max(2, min(self.trend_window, len(self._pnl_trend_history)))
-        smoothed: List[float] = []
-        running_sum = 0.0
+        self.bid_price_curve.setData(self._t_history, self._bid_price_history)
+        self.ask_price_curve.setData(self._t_history, self._ask_price_history)
+        self.bid_qty_curve.setData(self._t_history, self._bid_qty_history)
+        self.ask_qty_curve.setData(self._t_history, self._ask_qty_history)
 
-        for i, v in enumerate(self._pnl_trend_history):
-            running_sum += v
-            if i >= window:
-                running_sum -= self._pnl_trend_history[i - window]
-            current_window = min(i + 1, window)
-            smoothed.append(running_sum / current_window)
+        if self._t_history:
+            self.price_plot.setXRange(self._t_history[0], self._t_history[-1])
+            self.qty_plot.setXRange(self._t_history[0], self._t_history[-1])
 
-        self.trend_curve.setData(self._pnl_trend_time_history, smoothed)
-
-        latest_t = self._pnl_trend_time_history[-1]
-        if latest_t <= 120.0:
-            self.trend_plot.setXRange(0.0, 120.0)
-        else:
-            self.trend_plot.setXRange(latest_t - 120.0, latest_t)
+    def _format_latency_summary(self, latency: Dict[str, Any]) -> str:
+        p50 = latency.get("p50")
+        p95 = latency.get("p95")
+        p99 = latency.get("p99")
+        if p50 is None and p95 is None and p99 is None:
+            return "-"
+        return f"{p50 if p50 is not None else '-'} / {p95 if p95 is not None else '-'} / {p99 if p99 is not None else '-'}"
 
     def _refresh(self) -> None:
         snapshot = self._read_snapshot()
@@ -260,111 +280,80 @@ class SnapshotViewer:
             return
 
         bbo = snapshot.get("bbo", {})
-        ui = snapshot.get("ui", {})
-        pnl = ui.get("pnl_live", {})
-        execution_quality = ui.get("execution_quality", {})
+        ouch = snapshot.get("ouch", {})
+        metrics = ouch.get("metrics", {}) if isinstance(ouch, dict) else {}
+        recent_orders = ouch.get("recent_orders", []) if isinstance(ouch, dict) else []
 
         best_bid = bbo.get("best_bid_dollars")
         best_ask = bbo.get("best_ask_dollars")
         spread = bbo.get("spread_dollars")
+        best_bid_qty = bbo.get("best_bid_qty")
+        best_ask_qty = bbo.get("best_ask_qty")
 
-        self.bid_label.setText(f"Bid: {self._format_price(best_bid)}")
-        self.ask_label.setText(f"Ask: {self._format_price(best_ask)}")
+        bid_qty_txt = str(best_bid_qty) if isinstance(best_bid_qty, (int, float)) and not math.isnan(float(best_bid_qty)) else "-"
+        ask_qty_txt = str(best_ask_qty) if isinstance(best_ask_qty, (int, float)) and not math.isnan(float(best_ask_qty)) else "-"
+        self.bid_label.setText(f"Bid: {self._format_price(best_bid)} (qty {bid_qty_txt})")
+        self.ask_label.setText(f"Ask: {self._format_price(best_ask)} (qty {ask_qty_txt})")
         self.spread_label.setText(f"Spread: {self._format_price(spread)}")
 
         snapshot_ts = snapshot.get("timestamp")
-        delta_snapshot_s: Optional[float] = None
         if isinstance(snapshot_ts, (int, float)):
-            if self._last_snapshot_wall_ts is not None:
-                delta_snapshot_s = max(float(snapshot_ts) - self._last_snapshot_wall_ts, 0.0)
-            self._last_snapshot_wall_ts = float(snapshot_ts)
-
-        series = pnl.get("series")
-        frame_t: Optional[float] = None
-        if isinstance(series, list) and series:
-            y = [float(v) for v in series]
-            # Keep original cadence by ingesting the full embedded series.
-            self._snapshot_buffer.extend(y)
-            point_dt = self._sample_dt_s
-            if delta_snapshot_s is not None and len(y) > 0:
-                point_dt = max(delta_snapshot_s / len(y), 1e-4)
-            if self._pnl_time_history:
-                t = self._pnl_time_history[-1]
-            else:
-                t = 0.0
-            for _ in y:
-                t += point_dt
-                self._pnl_time_history.append(t)
-            frame_t = t
-            if len(self._snapshot_buffer) > self.history:
-                self._snapshot_buffer = self._snapshot_buffer[-self.history :]
-                self._pnl_time_history = self._pnl_time_history[-self.history :]
-            self._pnl_history = self._snapshot_buffer[-self.history :]
+            if self._start_wall_ts is None:
+                self._start_wall_ts = float(snapshot_ts)
+            rel_t = max(float(snapshot_ts) - self._start_wall_ts, 0.0)
+        elif self._t_history:
+            rel_t = self._t_history[-1] + (self.refresh_ms / 1000.0)
         else:
-            current = pnl.get("current")
-            if isinstance(current, (int, float)):
-                self._pnl_history.append(float(current))
-                if self._pnl_time_history:
-                    t = self._pnl_time_history[-1] + (delta_snapshot_s if delta_snapshot_s is not None else self._sample_dt_s)
-                else:
-                    t = 0.0
-                self._pnl_time_history.append(t)
-                frame_t = t
-                self._snapshot_buffer.append(float(current))
-                if len(self._pnl_history) > self.history:
-                    self._pnl_history = self._pnl_history[-self.history :]
-                    self._pnl_time_history = self._pnl_time_history[-self.history :]
-                if len(self._snapshot_buffer) > self.history * 2:
-                    self._snapshot_buffer = self._snapshot_buffer[-self.history * 2 :]
+            rel_t = 0.0
 
-        if frame_t is None:
-            if self._pnl_time_history:
-                frame_t = self._pnl_time_history[-1]
-            elif self._hit_rate_time_history:
-                frame_t = self._hit_rate_time_history[-1] + (delta_snapshot_s if delta_snapshot_s is not None else self._sample_dt_s)
-            else:
-                frame_t = 0.0
+        self._update_orderbook_plots(rel_t, best_bid, best_ask, best_bid_qty, best_ask_qty)
 
-        hit_rate_pct = execution_quality.get("hit_rate_pct")
+        hit_rate_pct = metrics.get("hit_rate_pct")
         if isinstance(hit_rate_pct, (int, float)):
-            hr = float(hit_rate_pct)
-            self.hit_rate_label.setText(f"Hit Rate: {hr:.2f}%")
-            self._hit_rate_history.append(hr)
-            self._hit_rate_time_history.append(frame_t)
-            if len(self._hit_rate_history) > self.history:
-                self._hit_rate_history = self._hit_rate_history[-self.history :]
-                self._hit_rate_time_history = self._hit_rate_time_history[-self.history :]
+            self.hit_rate_label.setText(f"Hit Rate: {float(hit_rate_pct):.2f}%")
         else:
             self.hit_rate_label.setText("Hit Rate: -")
 
-        if self._pnl_history:
-            self.curve.setData(self._pnl_time_history, self._pnl_history)
-            current_pnl = self._pnl_history[-1]
-            self.pnl_label.setText(f"PnL: ${current_pnl:.2f}")
-
-            self.plot.setXRange(self._pnl_time_history[0], self._pnl_time_history[-1])
-
-            # Anchor trend at first observed PnL and persist history since start.
-            if self._pnl_anchor is None:
-                self._pnl_anchor = current_pnl
-            self._pnl_trend_history.append(current_pnl - self._pnl_anchor)
-            self._pnl_trend_time_history.append(self._pnl_time_history[-1])
-
-            self._update_histogram()
-            self._update_pnl_trend_plot()
+        realized_pnl = metrics.get("realized_pnl_dollars")
+        if isinstance(realized_pnl, (int, float)):
+            self.pnl_label.setText(f"Realized PnL: ${float(realized_pnl):.2f}")
         else:
-            self.pnl_label.setText("PnL: -")
-            self.trend_curve.setData([], [])
+            self.pnl_label.setText("Realized PnL: -")
 
-        self._update_hit_rate_plot()
+        latency = metrics.get("latency_us") if isinstance(metrics, dict) else {}
+        if isinstance(latency, dict):
+            self.latency_label.setText(
+                f"Latency us (P50/P95/P99): {self._format_latency_summary(latency)}"
+            )
+        else:
+            self.latency_label.setText("Latency us (P50/P95/P99): -")
+
+        accepted = metrics.get("accepted_orders") if isinstance(metrics, dict) else None
+        executed = metrics.get("executed_orders") if isinstance(metrics, dict) else None
+        canceled = metrics.get("canceled_orders") if isinstance(metrics, dict) else None
+        if all(isinstance(v, int) for v in (accepted, executed, canceled)):
+            self.counts_label.setText(
+                f"Accepted/Executed/Canceled: {accepted}/{executed}/{canceled}"
+            )
+        else:
+            self.counts_label.setText("Accepted/Executed/Canceled: -")
+
+        if isinstance(recent_orders, list):
+            self._update_recent_orders(recent_orders[:10])
+        else:
+            self._update_recent_orders([])
 
         ts = snapshot.get("timestamp")
         if isinstance(ts, (int, float)):
             self.ts_label.setText(time.strftime("Updated: %H:%M:%S", time.localtime(ts)))
+            age_s = max(time.time() - float(ts), 0.0)
+            if age_s > max(2.0, self.refresh_ms / 1000.0 * 3.0):
+                self.status.setText(f"Snapshot stale ({age_s:.2f}s old): {self.snapshot_path}")
+            else:
+                self.status.setText(f"Watching {self.snapshot_path}")
         else:
             self.ts_label.setText("Updated: -")
-
-        self.status.setText(f"Watching {self.snapshot_path}")
+            self.status.setText(f"Watching {self.snapshot_path}")
 
     def run(self) -> int:
         self.window.show()
@@ -377,11 +366,9 @@ def main() -> None:
         raise SystemExit("--refresh-ms must be > 0")
     if args.history <= 0:
         raise SystemExit("--history must be > 0")
-    if args.trend_window <= 1:
-        raise SystemExit("--trend-window must be > 1")
 
     try:
-        viewer = SnapshotViewer(args.snapshot_path, args.refresh_ms, args.history, args.trend_window)
+        viewer = OuchDashboardViewer(args.snapshot_path, args.refresh_ms, args.history)
     except ImportError as exc:
         raise SystemExit(
             "GUI dependencies missing. Install with: pip install pyqtgraph PyQt6"

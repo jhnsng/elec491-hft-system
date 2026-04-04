@@ -13,7 +13,7 @@ The system is intentionally split into two processes:
   - Optionally updates orderbook, writes snapshots, runs OUCH paper server
 - Process B: `orderbook_viewer.py`
   - Reads snapshot JSON
-  - Renders charts and metrics
+  - Renders OUCH efficacy metrics, recent order statuses, and top-of-book feeds
 
 This keeps GUI work off the forwarding hot path.
 
@@ -77,7 +77,14 @@ python src/orderbook_viewer.py \
 Useful viewer options:
 
 - `--history N` (default `600`)
-- `--trend-window N` (default `25`)
+
+Dashboard highlights:
+
+- Realized gross PnL computed from OUCH executions (FIFO)
+- Hit rate from real Accepted/Executed counts
+- Latency summary (P50/P95/P99, microseconds)
+- Recent OUCH orders table (last 10): side, limit price, status, executed qty/price
+- Top-of-book feed graphs: best bid/ask prices and quantities over time
 
 ## Replay Mode
 

@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from ouch_metrics import OUCHMetricsTracker
 from orderbook import OrderBook
 
 LOGGER = logging.getLogger("ouch_server")
@@ -320,11 +321,13 @@ class OUCHSession:
         addr: tuple,
         orderbook: OrderBook,
         stop_event: threading.Event,
+        metrics_tracker: Optional[OUCHMetricsTracker] = None,
     ):
         self._conn = conn
         self._addr = addr
         self._orderbook = orderbook
         self._stop_event = stop_event
+        self._metrics_tracker = metrics_tracker
 
         self._paper_orders: Dict[int, PaperOrder] = {}
         self._next_order_ref_num = 1
@@ -454,6 +457,15 @@ class OUCHSession:
         )
         self._send(accepted_msg)
         self._orders_accepted += 1
+        if self._metrics_tracker is not None:
+            self._metrics_tracker.on_accepted(
+                user_ref_num=user_ref_num,
+                symbol=symbol_str,
+                side=side,
+                quantity=quantity,
+                limit_price_ticks=price,
+                accepted_ts_ns=ts,
+            )
 
         LOGGER.info(
             "OUCH Accepted: UserRefNum=%d Symbol=%s Side=%s Qty=%d "
@@ -489,6 +501,13 @@ class OUCHSession:
             self._send(executed_msg)
             paper_order.remaining = 0
             self._orders_executed += 1
+            if self._metrics_tracker is not None:
+                self._metrics_tracker.on_executed(
+                    user_ref_num=user_ref_num,
+                    executed_qty=quantity,
+                    execution_price_ticks=exec_price,
+                    execution_ts_ns=exec_ts,
+                )
 
             LOGGER.info(
                 "OUCH Executed: UserRefNum=%d Qty=%d ExecPrice=%.4f "
@@ -542,6 +561,12 @@ class OUCHSession:
         )
         self._send(canceled_msg)
         self._orders_canceled += 1
+        if self._metrics_tracker is not None:
+            self._metrics_tracker.on_canceled(
+                user_ref_num=user_ref_num,
+                canceled_qty=canceled_qty,
+                canceled_ts_ns=ts,
+            )
 
         symbol_str = _safe_symbol(paper_order.symbol)
         LOGGER.info(
@@ -567,9 +592,15 @@ class OUCHServer:
     - All threads share a single stop_event for coordinated shutdown.
     """
 
-    def __init__(self, settings: OUCHSettings, orderbook: OrderBook):
+    def __init__(
+        self,
+        settings: OUCHSettings,
+        orderbook: OrderBook,
+        metrics_tracker: Optional[OUCHMetricsTracker] = None,
+    ):
         self._settings = settings
         self._orderbook = orderbook
+        self._metrics_tracker = metrics_tracker
         self._stop_event = threading.Event()
         self._server_socket: Optional[socket.socket] = None
         self._thread: Optional[threading.Thread] = None
@@ -644,7 +675,13 @@ class OUCHServer:
                 LOGGER.exception("Accept loop error")
                 break
 
-            session = OUCHSession(conn, addr, self._orderbook, self._stop_event)
+            session = OUCHSession(
+                conn,
+                addr,
+                self._orderbook,
+                self._stop_event,
+                self._metrics_tracker,
+            )
             t = threading.Thread(
                 target=session.run,
                 name=f"ouch-client-{addr}",
