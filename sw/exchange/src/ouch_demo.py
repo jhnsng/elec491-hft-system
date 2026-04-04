@@ -36,35 +36,57 @@ def _price_str(price_ticks: int) -> str:
     return f"${price_ticks / 10000:.4f}"
 
 
+def _hex_dump(data: bytes) -> str:
+    """Format bytes as an uppercase, space-separated hex string."""
+    return " ".join(f"{b:02X}" for b in data)
+
+
+def _safe_symbol(symbol_bytes: bytes) -> str:
+    """Decode OUCH symbol field to printable ASCII for terminal display.
+
+    OUCH symbols are fixed-width 8-byte alpha fields that are typically
+    space-padded. Some tooling can emit non-ASCII bytes; render those as '.'
+    so logs remain readable and deterministic.
+    """
+    trimmed = symbol_bytes.rstrip(b" \x00")
+    return "".join(chr(b) if 32 <= b <= 126 else "." for b in trimmed)
+
+
 def _decode_response(data: bytes) -> str:
     """Decode an OUCH outbound message into a human-readable string."""
     msg_type = chr(data[0])
+    hex_str = _hex_dump(data)
 
     if msg_type == "A":
         fields = ACCEPTED_FMT.unpack(data)
+        side = fields[3].decode("ascii", errors="replace")
+        symbol = _safe_symbol(fields[5])
+        state = fields[13].decode("ascii", errors="replace")
         return (
-            f"  ACCEPTED  UserRef={fields[2]}  Side={fields[3].decode()}  "
-            f"Qty={fields[4]}  Symbol={fields[5].decode().strip()}  "
+            f"  ACCEPTED  UserRef={fields[2]}  Side={side}  "
+            f"Qty={fields[4]}  Symbol={symbol}  "
             f"Price={_price_str(fields[6])}  OrderRef={fields[9]}  "
-            f"State={fields[13].decode()}"
+            f"State={state}  HEX={hex_str}"
         )
 
     if msg_type == "E":
         fields = EXECUTED_FMT.unpack(data)
+        liquidity = fields[5].decode("ascii", errors="replace")
         return (
             f"  EXECUTED  UserRef={fields[2]}  Qty={fields[3]}  "
-            f"Price={_price_str(fields[4])}  Liquidity={fields[5].decode()}  "
-            f"MatchNum={fields[6]}"
+            f"Price={_price_str(fields[4])}  Liquidity={liquidity}  "
+            f"MatchNum={fields[6]}  HEX={hex_str}"
         )
 
     if msg_type == "C":
         fields = CANCELED_FMT.unpack(data)
+        reason = fields[4].decode("ascii", errors="replace")
         return (
             f"  CANCELED  UserRef={fields[2]}  CxlQty={fields[3]}  "
-            f"Reason={fields[4].decode()}"
+            f"Reason={reason}  HEX={hex_str}"
         )
 
-    return f"  UNKNOWN type={msg_type!r} len={len(data)}"
+    return f"  UNKNOWN type={msg_type!r} len={len(data)}  HEX={hex_str}"
 
 
 def _recv_responses(sock: socket.socket, expected: int, timeout: float = 2.0) -> list:
