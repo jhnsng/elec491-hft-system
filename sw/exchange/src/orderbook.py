@@ -122,6 +122,7 @@ class OrderBook:
         self._cancels = 0
         self._deletes = 0
         self._executes = 0
+        self._replaces = 0
         self._unknown_order_ids = 0
 
         # Snapshot state
@@ -295,6 +296,64 @@ class OrderBook:
         self._last_timestamp_ns = timestamp_ns
         return True
 
+    def replace_order(
+        self,
+        original_order_id: int,
+        new_order_id: int,
+        shares: int,
+        price_ticks: int,
+        timestamp_ns: int,
+    ) -> bool:
+        """Replace an existing order with a new ID/price/size (ITCH message U).
+
+        Args:
+            original_order_id: Existing order reference number
+            new_order_id: Replacement order reference number
+            shares: New order shares
+            price_ticks: New order price in 1/10000 dollars
+            timestamp_ns: ITCH timestamp
+
+        Returns:
+            True if replacement was applied, False otherwise
+        """
+        original = self._orders.get(original_order_id)
+        if original is None:
+            self._unknown_order_ids += 1
+            return False
+
+        # Prevent accidental overwrite unless replacing in-place with same ID.
+        if new_order_id != original_order_id and new_order_id in self._orders:
+            LOGGER.warning(
+                "Replacement new order ID %s already exists, skipping replace of %s",
+                new_order_id,
+                original_order_id,
+            )
+            self._unknown_order_ids += 1
+            return False
+
+        old_price_level = self._get_price_level(original.side, original.price_ticks)
+        if old_price_level:
+            old_price_level.remove_order(original)
+            if old_price_level.is_empty():
+                self._remove_price_level(original.side, original.price_ticks)
+
+        del self._orders[original_order_id]
+
+        replacement = Order(
+            order_id=new_order_id,
+            ticker=original.ticker,
+            side=original.side,
+            price_ticks=price_ticks,
+            shares=shares,
+            timestamp_ns=timestamp_ns,
+        )
+        self._orders[new_order_id] = replacement
+        self._add_to_price_level(replacement)
+
+        self._replaces += 1
+        self._last_timestamp_ns = timestamp_ns
+        return True
+
     # -------------------------------------------------------------------------
     # Price level helpers
     # -------------------------------------------------------------------------
@@ -420,6 +479,7 @@ class OrderBook:
                     "cancels": self._cancels,
                     "deletes": self._deletes,
                     "executes": self._executes,
+                    "replaces": self._replaces,
                     "unknown_order_ids": self._unknown_order_ids,
                 },
             }
@@ -480,11 +540,12 @@ class OrderBook:
         )
         logger.info("Active orders: %d", stats["total_orders"])
         logger.info(
-            "Operations: adds=%d cancels=%d deletes=%d executes=%d",
+            "Operations: adds=%d cancels=%d deletes=%d executes=%d replaces=%d",
             stats["adds"],
             stats["cancels"],
             stats["deletes"],
             stats["executes"],
+            stats.get("replaces", 0),
         )
         if stats["unknown_order_ids"] > 0:
             logger.warning("Unknown order IDs (untracked tickers): %d", stats["unknown_order_ids"])

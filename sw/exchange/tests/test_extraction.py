@@ -19,6 +19,9 @@ from data_forwarder import (
     SequentialOrderIDMapper,
     extract_order_id,
     extract_price_ticks,
+    extract_replaced_order_id,
+    extract_replaced_price_ticks,
+    extract_replaced_shares,
     extract_side,
     extract_shares,
     parse_itch_time_24h_to_ns,
@@ -88,6 +91,24 @@ class TestExtractOrderId:
         payload[10:18] = order_id.to_bytes(8, "big")
         
         result = extract_order_id("E", memoryview(payload))
+        assert result == order_id
+
+    def test_extract_order_id_execute_with_price(self):
+        """Test extracting order ID from Order Executed With Price (C) message."""
+        order_id = 44444444444444
+        payload = bytearray(36)
+        payload[10:18] = order_id.to_bytes(8, "big")
+
+        result = extract_order_id("C", memoryview(payload))
+        assert result == order_id
+
+    def test_extract_order_id_replace_original(self):
+        """Test extracting original order ID from Order Replace (U) message."""
+        order_id = 55555555555555
+        payload = bytearray(34)
+        payload[10:18] = order_id.to_bytes(8, "big")
+
+        result = extract_order_id("U", memoryview(payload))
         assert result == order_id
 
     def test_extract_order_id_unsupported_type(self):
@@ -219,6 +240,15 @@ class TestExtractShares:
         result = extract_shares("E", memoryview(payload))
         assert result == executed_shares
 
+    def test_extract_shares_execute_with_price(self):
+        """Test extracting executed shares from Order Executed With Price (C)."""
+        executed_shares = 175
+        payload = bytearray(36)
+        payload[18:22] = executed_shares.to_bytes(4, "big")
+
+        result = extract_shares("C", memoryview(payload))
+        assert result == executed_shares
+
     def test_extract_shares_delete_returns_none(self):
         """Test that Order Delete (D) returns None (no shares field)."""
         payload = bytearray(20)
@@ -257,6 +287,34 @@ class TestExtractSharesLargeValues:
         
         result = extract_shares("A", memoryview(payload))
         assert result == 0
+
+
+class TestExtractReplaceFields:
+    """Tests for replace-message extraction helpers."""
+
+    def test_extract_replaced_order_id(self):
+        new_order_id = 66666666666666
+        payload = bytearray(34)
+        payload[18:26] = new_order_id.to_bytes(8, "big")
+
+        result = extract_replaced_order_id(memoryview(payload))
+        assert result == new_order_id
+
+    def test_extract_replaced_shares(self):
+        shares = 1234
+        payload = bytearray(34)
+        payload[26:30] = shares.to_bytes(4, "big")
+
+        result = extract_replaced_shares(memoryview(payload))
+        assert result == shares
+
+    def test_extract_replaced_price_ticks(self):
+        price_ticks = 2_999_500
+        payload = bytearray(34)
+        payload[30:34] = price_ticks.to_bytes(4, "big")
+
+        result = extract_replaced_price_ticks(memoryview(payload))
+        assert result == price_ticks
 
 
 class TestParseITCHTime24h:
@@ -361,6 +419,14 @@ class TestOrderIDRewriteHelpers:
         rewritten_msg = Message(rewritten)
         rewritten_id = extract_order_id(rewritten_msg.msg_type, rewritten_msg.payload)
         assert rewritten_id == 999
+
+    def test_mapper_replace_carries_mapping(self):
+        mapper = SequentialOrderIDMapper(start_id=100)
+        assert mapper.map_add(1001) == 100
+
+        assert mapper.replace(1001, 2001) is True
+        assert mapper.get_mapped(1001) is None
+        assert mapper.get_mapped(2001) == 100
 
 
 class TestForwardableITCHTypes:

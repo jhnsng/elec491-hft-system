@@ -165,6 +165,31 @@ class TestOrderBook:
         book.execute_shares(1, 100, 1000)
         assert not book.has_order(1)
 
+    def test_replace_order_updates_price_and_id(self):
+        """Replace should move order to new ID and new price while preserving side/ticker."""
+        book = OrderBook()
+        book.add_order(1, "AAPL", "B", 1500000, 100, 0)
+
+        replaced = book.replace_order(
+            original_order_id=1,
+            new_order_id=2,
+            shares=80,
+            price_ticks=1510000,
+            timestamp_ns=1000,
+        )
+
+        assert replaced is True
+        assert not book.has_order(1)
+        assert book.has_order(2)
+        assert book.get_ticker(2) == "AAPL"
+
+        best_bid, best_ask = book.get_bbo()
+        assert best_bid == 1510000
+        assert best_ask is None
+
+        snapshot = book.get_snapshot()
+        assert snapshot["statistics"]["replaces"] == 1
+
     def test_get_bbo_empty_book(self):
         """Test BBO on empty book returns None for both."""
         book = OrderBook()
