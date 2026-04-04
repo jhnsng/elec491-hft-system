@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from ouch_metrics import OUCHMetricsTracker
 from orderbook import OrderBook
 
 LOGGER = logging.getLogger("ouch_server")
@@ -106,6 +107,25 @@ def _nanos_since_midnight() -> int:
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     delta = now - midnight
     return int(delta.total_seconds() * 1_000_000_000)
+
+
+def _hex_dump(data: bytes) -> str:
+    """Format bytes as an uppercase, space-separated hex string."""
+    return " ".join(f"{b:02X}" for b in data)
+
+
+def _safe_ascii(data: bytes) -> str:
+    """Render bytes as printable ASCII, replacing non-printable bytes with '.'."""
+    return "".join(chr(b) if 32 <= b <= 126 else "." for b in data)
+
+
+def _safe_symbol(symbol: bytes) -> str:
+    """Render fixed-width OUCH symbol field for logs.
+
+    OUCH symbols are typically space-padded ASCII. Strip space and null padding,
+    then map any remaining non-printable bytes to '.' for stable server logs.
+    """
+    return _safe_ascii(symbol.rstrip(b" \x00"))
 
 
 ###############################################################################
@@ -301,11 +321,13 @@ class OUCHSession:
         addr: tuple,
         orderbook: OrderBook,
         stop_event: threading.Event,
+        metrics_tracker: Optional[OUCHMetricsTracker] = None,
     ):
         self._conn = conn
         self._addr = addr
         self._orderbook = orderbook
         self._stop_event = stop_event
+        self._metrics_tracker = metrics_tracker
 
         self._paper_orders: Dict[int, PaperOrder] = {}
         self._next_order_ref_num = 1
@@ -330,8 +352,11 @@ class OUCHSession:
                     self._handle_cancel_order(data)
                 else:
                     LOGGER.warning(
-                        "Unknown OUCH message type %r from %s, ignoring",
-                        msg_type, self._addr,
+                        "Unknown OUCH message type %r from %s len=%d HEX=%s, ignoring",
+                        msg_type,
+                        self._addr,
+                        len(data),
+                        _hex_dump(data),
                     )
         except ConnectionError:
             LOGGER.info("OUCH client disconnected: %s", self._addr)
@@ -366,7 +391,13 @@ class OUCHSession:
         try:
             fields = parse_enter_order(data)
         except ValueError as exc:
-            LOGGER.warning("Malformed Enter Order from %s: %s", self._addr, exc)
+            LOGGER.warning(
+                "Malformed Enter Order from %s: %s len=%d HEX=%s",
+                self._addr,
+                exc,
+                len(data),
+                _hex_dump(data),
+            )
             return
 
         ts = _nanos_since_midnight()
@@ -376,6 +407,18 @@ class OUCHSession:
         quantity = fields["quantity"]
         symbol = fields["symbol"]
         price = fields["price"]
+        side_str = _safe_ascii(side)
+        symbol_str = _safe_symbol(symbol)
+
+        LOGGER.info(
+            "OUCH EnterOrder RX: UserRefNum=%d Symbol=%s Side=%s Qty=%d Price=%.4f HEX=%s",
+            user_ref_num,
+            symbol_str,
+            side_str,
+            quantity,
+            price / 10000.0,
+            _hex_dump(data),
+        )
 
         paper_order = PaperOrder(
             user_ref_num=user_ref_num,
@@ -414,13 +457,25 @@ class OUCHSession:
         )
         self._send(accepted_msg)
         self._orders_accepted += 1
+        if self._metrics_tracker is not None:
+            self._metrics_tracker.on_accepted(
+                user_ref_num=user_ref_num,
+                symbol=symbol_str,
+                side=side,
+                quantity=quantity,
+                limit_price_ticks=price,
+                accepted_ts_ns=ts,
+            )
 
-        symbol_str = symbol.decode("ascii", errors="ignore").strip()
         LOGGER.info(
             "OUCH Accepted: UserRefNum=%d Symbol=%s Side=%s Qty=%d "
-            "Price=%.4f OrderRefNum=%d",
-            user_ref_num, symbol_str, side.decode(), quantity,
+            "Price=%.4f OrderRefNum=%d HEX=%s",
+            user_ref_num,
+            symbol_str,
+            side_str,
+            quantity,
             price / 10000.0, order_ref_num,
+            _hex_dump(accepted_msg),
         )
 
         # Check for BBO cross (read-only orderbook access)
@@ -446,13 +501,21 @@ class OUCHSession:
             self._send(executed_msg)
             paper_order.remaining = 0
             self._orders_executed += 1
+            if self._metrics_tracker is not None:
+                self._metrics_tracker.on_executed(
+                    user_ref_num=user_ref_num,
+                    executed_qty=quantity,
+                    execution_price_ticks=exec_price,
+                    execution_ts_ns=exec_ts,
+                )
 
             LOGGER.info(
                 "OUCH Executed: UserRefNum=%d Qty=%d ExecPrice=%.4f "
-                "MatchNum=%d (BBO: bid=%s ask=%s)",
+                "MatchNum=%d (BBO: bid=%s ask=%s) HEX=%s",
                 user_ref_num, quantity, exec_price / 10000.0, match_number,
                 f"${best_bid / 10000.0:.4f}" if best_bid else "None",
                 f"${best_ask / 10000.0:.4f}" if best_ask else "None",
+                _hex_dump(executed_msg),
             )
 
     def _handle_cancel_order(self, data: bytes) -> None:
@@ -460,10 +523,23 @@ class OUCHSession:
         try:
             fields = parse_cancel_order(data)
         except ValueError as exc:
-            LOGGER.warning("Malformed Cancel Order from %s: %s", self._addr, exc)
+            LOGGER.warning(
+                "Malformed Cancel Order from %s: %s len=%d HEX=%s",
+                self._addr,
+                exc,
+                len(data),
+                _hex_dump(data),
+            )
             return
 
         user_ref_num = fields["user_ref_num"]
+        req_qty = fields["quantity"]
+        LOGGER.info(
+            "OUCH CancelOrder RX: UserRefNum=%d ReqQty=%d HEX=%s",
+            user_ref_num,
+            req_qty,
+            _hex_dump(data),
+        )
         paper_order = self._paper_orders.get(user_ref_num)
 
         if paper_order is None or paper_order.remaining <= 0:
@@ -485,11 +561,20 @@ class OUCHSession:
         )
         self._send(canceled_msg)
         self._orders_canceled += 1
+        if self._metrics_tracker is not None:
+            self._metrics_tracker.on_canceled(
+                user_ref_num=user_ref_num,
+                canceled_qty=canceled_qty,
+                canceled_ts_ns=ts,
+            )
 
-        symbol_str = paper_order.symbol.decode("ascii", errors="ignore").strip()
+        symbol_str = _safe_symbol(paper_order.symbol)
         LOGGER.info(
-            "OUCH Canceled: UserRefNum=%d Symbol=%s CanceledQty=%d Reason=U",
-            user_ref_num, symbol_str, canceled_qty,
+            "OUCH Canceled: UserRefNum=%d Symbol=%s CanceledQty=%d Reason=U HEX=%s",
+            user_ref_num,
+            symbol_str,
+            canceled_qty,
+            _hex_dump(canceled_msg),
         )
 
 
@@ -507,9 +592,15 @@ class OUCHServer:
     - All threads share a single stop_event for coordinated shutdown.
     """
 
-    def __init__(self, settings: OUCHSettings, orderbook: OrderBook):
+    def __init__(
+        self,
+        settings: OUCHSettings,
+        orderbook: OrderBook,
+        metrics_tracker: Optional[OUCHMetricsTracker] = None,
+    ):
         self._settings = settings
         self._orderbook = orderbook
+        self._metrics_tracker = metrics_tracker
         self._stop_event = threading.Event()
         self._server_socket: Optional[socket.socket] = None
         self._thread: Optional[threading.Thread] = None
@@ -584,7 +675,13 @@ class OUCHServer:
                 LOGGER.exception("Accept loop error")
                 break
 
-            session = OUCHSession(conn, addr, self._orderbook, self._stop_event)
+            session = OUCHSession(
+                conn,
+                addr,
+                self._orderbook,
+                self._stop_event,
+                self._metrics_tracker,
+            )
             t = threading.Thread(
                 target=session.run,
                 name=f"ouch-client-{addr}",

@@ -222,33 +222,26 @@ class TestOrderBook:
         assert "bbo" in snapshot
         assert "depth" in snapshot
         assert "statistics" in snapshot
-        assert "ui" in snapshot
+        assert "ui" not in snapshot
+
+        assert snapshot["bbo"]["best_bid_qty"] == 100
+        assert snapshot["bbo"]["best_ask_qty"] == 100
         
         assert snapshot["statistics"]["adds"] == 2
         assert snapshot["statistics"]["total_orders"] == 2
 
-    def test_snapshot_ui_payload_is_seeded_deterministic(self):
-        """Same seed should generate the same first snapshot UI payload."""
-        book1 = OrderBook(placeholder_seed=123)
-        book2 = OrderBook(placeholder_seed=123)
-
-        snap1 = book1.get_snapshot()
-        snap2 = book2.get_snapshot()
-
-        assert snap1["ui"]["seed"] == 123
-        assert snap1["ui"] == snap2["ui"]
-
-    def test_snapshot_ui_placeholders_exist_when_bbo_missing(self):
-        """Missing best bid/ask should include deterministic placeholder values."""
-        book = OrderBook(placeholder_seed=7)
+    def test_snapshot_without_orders_has_null_bbo(self):
+        """Snapshot should not fabricate BBO values when book is empty."""
+        book = OrderBook()
         snap = book.get_snapshot()
 
-        placeholders = snap["ui"]["placeholders"]
-        assert "best_bid_ticks" in placeholders
-        assert "best_ask_ticks" in placeholders
-        assert "spread_ticks" in placeholders
-        assert snap["ui"]["pnl_live"]["is_placeholder"] is True
-        assert len(snap["ui"]["pnl_live"]["series"]) == 60
+        bbo = snap["bbo"]
+        assert bbo["best_bid_ticks"] is None
+        assert bbo["best_ask_ticks"] is None
+        assert bbo["best_bid_qty"] is None
+        assert bbo["best_ask_qty"] is None
+        assert bbo["spread_ticks"] is None
+        assert bbo["spread_dollars"] is None
 
     def test_save_snapshot(self):
         """Test saving snapshot to file."""

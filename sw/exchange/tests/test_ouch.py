@@ -29,6 +29,7 @@ from ouch_server import (
     OUCHSession,
     OUCHServer,
 )
+from ouch_metrics import OUCHMetricsTracker
 from orderbook import OrderBook
 
 
@@ -535,3 +536,107 @@ class TestOUCHServer:
         # Give it a moment to bind
         time.sleep(0.2)
         server.stop()
+
+
+###############################################################################
+# OUCH metrics tracker
+###############################################################################
+
+
+class TestOUCHMetricsTracker:
+    """Test OUCH metrics aggregation for GUI-facing dashboards."""
+
+    def test_recent_orders_truncates_to_last_ten(self):
+        tracker = OUCHMetricsTracker(recent_orders_limit=10)
+
+        for i in range(1, 13):
+            tracker.on_accepted(
+                user_ref_num=i,
+                symbol="SPY",
+                side=b'B',
+                quantity=10,
+                limit_price_ticks=1_000_000 + i,
+                accepted_ts_ns=1_000_000_000 + i,
+            )
+
+        snapshot = tracker.get_snapshot()
+        recent = snapshot["recent_orders"]
+
+        assert len(recent) == 10
+        assert recent[0]["user_ref_num"] == 12
+        assert recent[-1]["user_ref_num"] == 3
+
+    def test_realized_pnl_fifo_for_round_trip(self):
+        tracker = OUCHMetricsTracker()
+
+        tracker.on_accepted(
+            user_ref_num=1,
+            symbol="SPY",
+            side=b'B',
+            quantity=100,
+            limit_price_ticks=1_000_000,
+            accepted_ts_ns=1_000,
+        )
+        tracker.on_executed(
+            user_ref_num=1,
+            executed_qty=100,
+            execution_price_ticks=1_000_000,
+            execution_ts_ns=2_000,
+        )
+
+        tracker.on_accepted(
+            user_ref_num=2,
+            symbol="SPY",
+            side=b'S',
+            quantity=100,
+            limit_price_ticks=1_005_000,
+            accepted_ts_ns=3_000,
+        )
+        tracker.on_executed(
+            user_ref_num=2,
+            executed_qty=100,
+            execution_price_ticks=1_005_000,
+            execution_ts_ns=4_000,
+        )
+
+        metrics = tracker.get_snapshot()["metrics"]
+        assert metrics["realized_pnl_dollars"] == 50.0
+        assert metrics["open_position_shares"] == 0
+
+    def test_ouch_session_updates_tracker(self):
+        book = OrderBook()
+        book.add_order(1, "SPY", "S", 2_950_000, 500, 0)
+
+        tracker = OUCHMetricsTracker()
+        client_sock, server_sock = socket.socketpair()
+        stop_event = threading.Event()
+        session = OUCHSession(server_sock, ("test", 0), book, stop_event, tracker)
+
+        t = threading.Thread(target=session.run, daemon=True)
+        t.start()
+
+        try:
+            enter_msg = ENTER_ORDER_FMT.pack(
+                b'O', 77, b'B', 100, b'SPY     ', 3_000_000,
+                b'0', b'Y', b'A', b'N', b'N', b'GUI_TRACKER   ',
+            )
+            client_sock.sendall(_frame_message(enter_msg))
+
+            # Accepted then Executed for crossing buy.
+            recv_framed_message(client_sock)
+            recv_framed_message(client_sock)
+
+            snap = tracker.get_snapshot()
+            metrics = snap["metrics"]
+            recent = snap["recent_orders"]
+
+            assert metrics["accepted_orders"] == 1
+            assert metrics["executed_orders"] == 1
+            assert metrics["hit_rate_pct"] == 100.0
+            assert len(recent) == 1
+            assert recent[0]["user_ref_num"] == 77
+            assert recent[0]["status"] == "EXECUTED"
+        finally:
+            stop_event.set()
+            client_sock.close()
+            t.join(timeout=2.0)
