@@ -90,7 +90,7 @@ class OrderBook:
     - _bids: SortedDict[int, PriceLevel] sorted ascending (best bid = max key)
     - _asks: SortedDict[int, PriceLevel] sorted ascending (best ask = min key)
 
-    The orderbook also provides ticker resolution for messages (D/E/X)
+    The orderbook also provides ticker resolution for messages (C/D/E/U/X)
     that don't contain ticker fields.
     """
 
@@ -130,13 +130,13 @@ class OrderBook:
         self._last_timestamp_ns: Optional[int] = None
 
     # -------------------------------------------------------------------------
-    # Ticker resolution (for D/E/X messages that lack ticker field)
+    # Ticker resolution (for C/D/E/U/X messages that lack ticker field)
     # -------------------------------------------------------------------------
 
     def get_ticker(self, order_id: int) -> Optional[str]:
         """Resolve ticker symbol from order ID.
 
-        Used by TickerFilter for messages (D/E/X) that don't contain ticker.
+        Used by TickerFilter for messages (C/D/E/U/X) that don't contain ticker.
 
         Args:
             order_id: The order reference number
@@ -292,6 +292,71 @@ class OrderBook:
             self._remove_price_level(order.side, order.price_ticks)
 
         self._executes += 1
+        self._last_timestamp_ns = timestamp_ns
+        return True
+
+    def replace_order(
+        self,
+        original_order_id: int,
+        new_order_id: int,
+        shares: int,
+        price_ticks: int,
+        timestamp_ns: int,
+    ) -> bool:
+        """Cancel-replace an existing order with a new order reference number.
+
+        Per ITCH U semantics, side/ticker attribution remains unchanged from the
+        original order. Only order reference number, shares, and price are
+        updated.
+
+        Args:
+            original_order_id: Existing order ID to replace
+            new_order_id: Replacement order ID from ITCH U message
+            shares: New total displayed shares for replacement order
+            price_ticks: New display price for replacement order
+            timestamp_ns: ITCH timestamp
+
+        Returns:
+            True if replace succeeded, False otherwise
+        """
+        original_order = self._orders.get(original_order_id)
+        if original_order is None:
+            self._unknown_order_ids += 1
+            return False
+
+        if new_order_id != original_order_id and new_order_id in self._orders:
+            LOGGER.debug(
+                "Duplicate replacement order ID %s for original %s, ignoring",
+                new_order_id,
+                original_order_id,
+            )
+            return False
+
+        side = original_order.side
+        ticker = original_order.ticker
+
+        old_level = self._get_price_level(side, original_order.price_ticks)
+        if old_level is not None:
+            old_level.remove_order(original_order)
+            if old_level.is_empty():
+                self._remove_price_level(side, original_order.price_ticks)
+
+        del self._orders[original_order_id]
+
+        replacement_order = Order(
+            order_id=new_order_id,
+            ticker=ticker,
+            side=side,
+            price_ticks=price_ticks,
+            shares=shares,
+            timestamp_ns=timestamp_ns,
+        )
+        self._orders[new_order_id] = replacement_order
+        self._add_to_price_level(replacement_order)
+
+        # Replace is effectively one delete and one add in book state.
+        self._deletes += 1
+        self._adds += 1
         self._last_timestamp_ns = timestamp_ns
         return True
 

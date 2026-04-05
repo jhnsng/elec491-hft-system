@@ -165,6 +165,42 @@ class TestOrderBook:
         book.execute_shares(1, 100, 1000)
         assert not book.has_order(1)
 
+    def test_replace_order_moves_id_and_updates_price_and_shares(self):
+        """Test Order Replace semantics: old order removed, new order added."""
+        book = OrderBook()
+        book.add_order(1, "AAPL", "B", 1500000, 100, 0)
+
+        result = book.replace_order(
+            original_order_id=1,
+            new_order_id=2,
+            shares=75,
+            price_ticks=1510000,
+            timestamp_ns=1000,
+        )
+
+        assert result is True
+        assert not book.has_order(1)
+        assert book.has_order(2)
+        assert book.get_ticker(2) == "AAPL"
+
+        depth = book.get_depth(levels=5)
+        assert depth["bids"][0]["price_ticks"] == 1510000
+        assert depth["bids"][0]["total_shares"] == 75
+
+    def test_replace_unknown_order_returns_false(self):
+        """Test replace_order returns False for unknown original order."""
+        book = OrderBook()
+
+        result = book.replace_order(
+            original_order_id=999,
+            new_order_id=1000,
+            shares=50,
+            price_ticks=1500000,
+            timestamp_ns=0,
+        )
+
+        assert result is False
+
     def test_get_bbo_empty_book(self):
         """Test BBO on empty book returns None for both."""
         book = OrderBook()
