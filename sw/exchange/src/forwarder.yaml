@@ -1,7 +1,7 @@
 # itch_file: ..\..\..\gen_test_vectors\outputs\exchange_vectors.bin
-# itch_file: /home/qazed/elec491-hft-system/sw/exchange/07302019.bin
+itch_file: /home/qazed/elec491-hft-system/sw/exchange/07302019.bin
 # itch_file: ..\..\..\gen_test_vectors\outputs\exchange_vectors.bin
-itch_file: C:\Users\Sofiya\Downloads\07302019.bin
+# itch_file: C:\Users\Sofiya\Downloads\07302019.bin
 
 udp:
   host: 192.168.1.123
@@ -19,8 +19,8 @@ reader:
 replay:
   enabled: true
   # start_timestamp: 34200000000000      # nanoseconds since midnight
-  # start_time_24h: "09:30:00.000000"    # market-day time, no timezone conversion
-  speed: 100.0
+  start_time_24h: "09:30:00.000000"    # market-day time, no timezone conversion
+  speed: 1.0
 
 tickers:
   - SPY
@@ -34,10 +34,9 @@ ouch:
 
 orderbook:
   max_orders: 5000000
-  snapshot_interval_s: 0.25
+  snapshot_interval_s: 10
   snapshot_depth: 10
   snapshot_path: ./orderbook_snapshot.json
-  placeholder_seed: 491
 
 order_id_rewrite:
   enabled: true
