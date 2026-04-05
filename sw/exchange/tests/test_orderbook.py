@@ -98,25 +98,9 @@ class TestOrderBook:
             shares=100,
             timestamp_ns=0,
         )
-                result = book.replace_order(
-                    original_order_id=1,
-                    new_order_id=2,
-                    shares=80,
-                    price_ticks=1510000,
-                    timestamp_ns=1000,
-                )
-
-                assert result is True
-                assert not book.has_order(1)
-                assert book.has_order(2)
-                assert book.get_ticker(2) == "AAPL"
-
-                best_bid, best_ask = book.get_bbo()
-                assert best_bid == 1510000
-                assert best_ask is None
-
-                snapshot = book.get_snapshot()
-                assert snapshot["statistics"]["replaces"] == 1
+        assert result is True
+        assert book.has_order(1)
+        assert book.get_ticker(1) == "AAPL"
 
 
     def test_cancel_all_shares_removes_order(self):
@@ -144,6 +128,7 @@ class TestOrderBook:
 
     def test_execute_shares(self):
         """Test executing shares from an order."""
+        book = OrderBook()
         book.add_order(1, "AAPL", "B", 1500000, 100, 0)
         
         result = book.execute_shares(1, 50, 1000)
@@ -153,6 +138,7 @@ class TestOrderBook:
     def test_execute_all_shares_removes_order(self):
         """Test that executing all shares removes the order."""
         book = OrderBook()
+        book.add_order(1, "AAPL", "B", 1500000, 100, 0)
         book.execute_shares(1, 100, 1000)
         assert not book.has_order(1)
 

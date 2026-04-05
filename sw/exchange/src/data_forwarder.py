@@ -802,6 +802,21 @@ def extract_shares(message_type: str, payload: memoryview) -> Optional[int]:
 	return None
 
 
+def extract_replaced_order_id(payload: memoryview) -> Optional[int]:
+	"""Backward-compatible helper for ITCH U new order reference number."""
+	return extract_replacement_order_id("U", payload)
+
+
+def extract_replaced_shares(payload: memoryview) -> Optional[int]:
+	"""Backward-compatible helper for ITCH U replacement shares field."""
+	return extract_shares("U", payload)
+
+
+def extract_replaced_price_ticks(payload: memoryview) -> Optional[int]:
+	"""Backward-compatible helper for ITCH U replacement price field."""
+	return extract_price_ticks("U", payload)
+
+
 ###############################################################################
 # Streaming reader
 ###############################################################################
@@ -1444,8 +1459,8 @@ def forward(
 				and ts_ns < replay_start_timestamp_ns
 			)
 
-			# For Add Order messages (A/F), we need to process orderbook BEFORE filtering
-			# so that subsequent D/E/X messages can resolve ticker
+			# For Add Order messages (A/F), process orderbook BEFORE filtering
+			# so that subsequent C/D/E/U/X messages can resolve ticker.
 			if orderbook_mode and orderbook and msg_type in ("A", "F") and not is_fastforwarding_before_start:
 				order_id = extract_order_id(msg_type, message.payload)
 				ticker = TICKER_EXTRACTORS.get(msg_type, lambda p: None)(message.payload)
@@ -1479,8 +1494,8 @@ def forward(
 				replacement_order_id = extract_replacement_order_id(msg_type, message.payload)
 				outbound_message = message.raw
 
-				# Update orderbook for D/E/X messages (order already exists from Add).
-				if orderbook_mode and orderbook and msg_type in ("X", "D", "E"):
+				# Update orderbook for order-referenced messages.
+				if orderbook_mode and orderbook and msg_type in ("X", "D", "E", "C", "U"):
 					if original_order_id is not None:
 						if msg_type == "X":  # Cancel
 							shares = extract_shares(msg_type, message.payload)
@@ -1488,10 +1503,21 @@ def forward(
 								orderbook.cancel_shares(original_order_id, shares, ts_ns or 0)
 						elif msg_type == "D":  # Delete
 							orderbook.delete_order(original_order_id, ts_ns or 0)
-						elif msg_type == "E":  # Execute
+						elif msg_type in ("E", "C"):  # Execute / Execute with Price
 							shares = extract_shares(msg_type, message.payload)
 							if shares is not None:
 								orderbook.execute_shares(original_order_id, shares, ts_ns or 0)
+						elif msg_type == "U":  # Replace
+							shares = extract_shares(msg_type, message.payload)
+							price = extract_price_ticks(msg_type, message.payload)
+							if replacement_order_id is not None and shares is not None and price is not None:
+								orderbook.replace_order(
+									original_order_id=original_order_id,
+									new_order_id=replacement_order_id,
+									shares=shares,
+									price_ticks=price,
+									timestamp_ns=ts_ns or 0,
+								)
 
 				if rewrite_mapper is not None:
 					if original_order_id is None:
