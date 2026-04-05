@@ -502,7 +502,7 @@ class Message:
 TickerExtractor = Callable[[memoryview], Optional[str]]
 
 # Only these ITCH message types are forwarded downstream.
-FORWARDABLE_ITCH_TYPES = frozenset({"A", "F", "X", "D", "E"})
+FORWARDABLE_ITCH_TYPES = frozenset({"A", "F", "C", "X", "D", "E", "U"})
 
 
 class SequentialOrderIDMapper:
@@ -556,13 +556,13 @@ def extract_order_id(message_type: str, payload: memoryview) -> Optional[int]:
 	Applies to:
 	- Message type A (Add Order)
 	- Message type F (Add Order MPID)
+	- Message type C (Order Executed With Price)
 	- Message type X (Order Cancel)
 	- Message type D (Order Delete)
 	- Message type E (Order Executed)
-	- Message type C (Order Executed With Price)
-	- Message type U (Order Replace, original order ID)
+	- Message type U (Order Replace, original order reference)
 	"""
-	if message_type in ("A", "F", "X", "D", "E", "C", "U"):
+	if message_type in ("A", "F", "C", "X", "D", "E", "U"):
 		if len(payload) < 18:
 			return None
 		try:
@@ -572,36 +572,78 @@ def extract_order_id(message_type: str, payload: memoryview) -> Optional[int]:
 	return None
 
 
-def rewrite_order_id_in_raw_message(raw: bytes, message_type: str, new_order_id: int) -> Optional[bytes]:
+def extract_replacement_order_id(message_type: str, payload: memoryview) -> Optional[int]:
+	"""Extract replacement order ID from an ITCH Order Replace (U) payload.
+
+	Per ITCH 5.0 spec, New Order Reference Number is at offset 19 from
+	message start, corresponding to payload[18:26].
+	"""
+	if message_type != "U":
+		return None
+	if len(payload) < 26:
+		return None
+	try:
+		return int.from_bytes(payload[18:26], "big")
+	except (ValueError, IndexError):
+		return None
+
+
+def rewrite_order_id_in_raw_message(
+	raw: bytes,
+	message_type: str,
+	new_order_id: int,
+	replacement_order_id: Optional[int] = None,
+) -> Optional[bytes]:
 	"""Rewrite order reference number in a raw ITCH message.
 
 	Order Reference Number is at payload[10:18]. Since payload starts at raw[3],
 	the corresponding raw slice is raw[13:21].
+
+	For Order Replace (U), both reference numbers are rewritten:
+	- Original Order Reference Number at raw[13:21]
+	- New Order Reference Number at raw[21:29]
 	"""
 	if message_type not in FORWARDABLE_ITCH_TYPES:
 		return None
-	if len(raw) < 21:
+	min_len = 29 if message_type == "U" else 21
+	if len(raw) < min_len:
+		return None
+	if message_type == "U" and replacement_order_id is None:
 		return None
 
 	updated = bytearray(raw)
 	updated[13:21] = new_order_id.to_bytes(8, "big")
+	if message_type == "U":
+		assert replacement_order_id is not None
+		updated[21:29] = replacement_order_id.to_bytes(8, "big")
 	return bytes(updated)
 
 
 def extract_price_ticks(message_type: str, payload: memoryview) -> Optional[int]:
 	"""Extract price (in 1/10000 dollars) from ITCH message payload.
 
-	Price extraction is currently supported for:
+	Price extraction is supported for:
 	- Message type A (Add Order)
 	- Message type F (Add Order MPID)
+	- Message type C (Order Executed With Price)
+	- Message type U (Order Replace)
 
-	For these messages, price is 4 bytes at payload[31:35].
+	Offsets per ITCH 5.0:
+	- A/F/C: price at payload[31:35]
+	- U: price at payload[30:34]
 	"""
-	if message_type in ("A", "F"):
+	if message_type in ("A", "F", "C"):
 		if len(payload) < 35:
 			return None
 		try:
 			return int.from_bytes(payload[31:35], "big")
+		except (ValueError, IndexError):
+			return None
+	if message_type == "U":
+		if len(payload) < 34:
+			return None
+		try:
+			return int.from_bytes(payload[30:34], "big")
 		except (ValueError, IndexError):
 			return None
 	return None
@@ -724,9 +766,10 @@ def extract_shares(message_type: str, payload: memoryview) -> Optional[int]:
 	Per ITCH 5.0 spec:
 	- Message type A (Add Order): Shares at payload[19:23] (4 bytes)
 	- Message type F (Add Order MPID): Shares at payload[19:23] (4 bytes)
+	- Message type C (Order Executed With Price): Executed shares at payload[18:22]
 	- Message type X (Order Cancel): Cancelled shares at payload[18:22] (4 bytes)
 	- Message type E (Order Executed): Executed shares at payload[18:22] (4 bytes)
-	- Message type C (Order Executed With Price): Executed shares at payload[18:22] (4 bytes)
+	- Message type U (Order Replace): New total shares at payload[26:30] (4 bytes)
 
 	Args:
 		message_type: ITCH message type character
@@ -749,37 +792,14 @@ def extract_shares(message_type: str, payload: memoryview) -> Optional[int]:
 			return int.from_bytes(payload[18:22], "big")
 		except (ValueError, IndexError):
 			return None
+	elif message_type == "U":
+		if len(payload) < 30:
+			return None
+		try:
+			return int.from_bytes(payload[26:30], "big")
+		except (ValueError, IndexError):
+			return None
 	return None
-
-
-def extract_replaced_order_id(payload: memoryview) -> Optional[int]:
-	"""Extract replacement order ID from ITCH Replace Order (U) message."""
-	if len(payload) < 26:
-		return None
-	try:
-		return int.from_bytes(payload[18:26], "big")
-	except (ValueError, IndexError):
-		return None
-
-
-def extract_replaced_shares(payload: memoryview) -> Optional[int]:
-	"""Extract replacement shares from ITCH Replace Order (U) message."""
-	if len(payload) < 30:
-		return None
-	try:
-		return int.from_bytes(payload[26:30], "big")
-	except (ValueError, IndexError):
-		return None
-
-
-def extract_replaced_price_ticks(payload: memoryview) -> Optional[int]:
-	"""Extract replacement price from ITCH Replace Order (U) message."""
-	if len(payload) < 34:
-		return None
-	try:
-		return int.from_bytes(payload[30:34], "big")
-	except (ValueError, IndexError):
-		return None
 
 
 ###############################################################################
@@ -859,14 +879,15 @@ class PreloadedITCHStream:
 
 # Message types that require orderbook lookup for ticker resolution
 # These messages don't contain ticker field - must resolve via order_id
-ORDERBOOK_RESOLVED_TYPES = frozenset({"D", "E", "X"})
+ORDERBOOK_RESOLVED_TYPES = frozenset({"C", "D", "E", "U", "X"})
 
 
 class TickerFilter:
 	"""Filter messages by ticker symbol.
 
 	For Add Order messages (A/F) and trades (P/Q/I), ticker is extracted directly.
-	For Cancel/Delete/Execute messages (X/D/E), ticker must be resolved via
+	For Cancel/Delete/Execute/Replace messages (X/D/E/C/U), ticker must be
+	resolved via
 	orderbook lookup using the order ID.
 	"""
 
@@ -875,7 +896,7 @@ class TickerFilter:
 
 		Args:
 			tickers: Set of ticker symbols to forward
-			orderbook: Optional OrderBook instance for ticker resolution on D/E/X messages
+			orderbook: Optional OrderBook instance for ticker resolution on C/D/E/U/X messages
 		"""
 		self.tickers = {ticker.upper() for ticker in tickers}
 		self.orderbook = orderbook
@@ -893,7 +914,7 @@ class TickerFilter:
 		if msg_type not in FORWARDABLE_ITCH_TYPES:
 			return False
 
-		# For D/E/X messages, resolve ticker via orderbook
+		# For C/D/E/U/X messages, resolve ticker via orderbook
 		if msg_type in ORDERBOOK_RESOLVED_TYPES:
 			if self.orderbook is None:
 				# No orderbook - can't resolve ticker for these message types
@@ -1422,77 +1443,55 @@ def forward(
 				and ts_ns is not None
 				and ts_ns < replay_start_timestamp_ns
 			)
-			should_forward_message = ticker_filter.should_forward(message)
 
-			# Update orderbook before filtering so resolved types can map to ticker/order state.
-			if orderbook_mode and orderbook and not is_fastforwarding_before_start:
-				if msg_type in ("A", "F"):
-					order_id = extract_order_id(msg_type, message.payload)
-					ticker = TICKER_EXTRACTORS.get(msg_type, lambda p: None)(message.payload)
-					side = extract_side(msg_type, message.payload)
-					shares = extract_shares(msg_type, message.payload)
-					price = extract_price_ticks(msg_type, message.payload)
+			# For Add Order messages (A/F), we need to process orderbook BEFORE filtering
+			# so that subsequent D/E/X messages can resolve ticker
+			if orderbook_mode and orderbook and msg_type in ("A", "F") and not is_fastforwarding_before_start:
+				order_id = extract_order_id(msg_type, message.payload)
+				ticker = TICKER_EXTRACTORS.get(msg_type, lambda p: None)(message.payload)
+				side = extract_side(msg_type, message.payload)
+				shares = extract_shares(msg_type, message.payload)
+				price = extract_price_ticks(msg_type, message.payload)
 
-					if all(v is not None for v in (order_id, ticker, side, shares, price)):
-						assert order_id is not None
-						assert ticker is not None
-						assert side is not None
-						assert shares is not None
-						assert price is not None
-						if ticker in ticker_filter.tickers:
-							orderbook.add_order(
-								order_id=order_id,
-								ticker=ticker,
-								side=side,
-								price_ticks=price,
-								shares=shares,
-								timestamp_ns=ts_ns or 0,
-							)
-				elif msg_type in ("X", "D", "E", "C", "U"):
-					original_order_id = extract_order_id(msg_type, message.payload)
-					if original_order_id is not None:
-						ticker = orderbook.get_ticker(original_order_id)
-						if ticker in ticker_filter.tickers:
-							if msg_type == "X":
-								shares = extract_shares(msg_type, message.payload)
-								if shares is not None:
-									orderbook.cancel_shares(original_order_id, shares, ts_ns or 0)
-							elif msg_type == "D":
-								orderbook.delete_order(original_order_id, ts_ns or 0)
-							elif msg_type in ("E", "C"):
-								shares = extract_shares(msg_type, message.payload)
-								if shares is not None:
-									orderbook.execute_shares(original_order_id, shares, ts_ns or 0)
-							elif msg_type == "U":
-								new_order_id = extract_replaced_order_id(message.payload)
-								replaced_shares = extract_replaced_shares(message.payload)
-								replaced_price = extract_replaced_price_ticks(message.payload)
-								if all(v is not None for v in (new_order_id, replaced_shares, replaced_price)):
-									assert new_order_id is not None
-									assert replaced_shares is not None
-									assert replaced_price is not None
-									orderbook.replace_order(
-										original_order_id=original_order_id,
-										new_order_id=new_order_id,
-										shares=replaced_shares,
-										price_ticks=replaced_price,
-										timestamp_ns=ts_ns or 0,
-									)
+				if all(v is not None for v in (order_id, ticker, side, shares, price)):
+					assert order_id is not None
+					assert ticker is not None
+					assert side is not None
+					assert shares is not None
+					assert price is not None
+					# Only add to orderbook if ticker is in our filter set
+					if ticker in ticker_filter.tickers:
+						orderbook.add_order(
+							order_id=order_id,
+							ticker=ticker,
+							side=side,
+							price_ticks=price,
+							shares=shares,
+							timestamp_ns=ts_ns or 0,
+						)
 
-			# Keep rewrite mapping coherent across replace events even though U is not forwarded.
-			if rewrite_mapper is not None and not is_fastforwarding_before_start and msg_type == "U":
-				original_order_id = extract_order_id(msg_type, message.payload)
-				new_order_id = extract_replaced_order_id(message.payload)
-				if original_order_id is not None and new_order_id is not None:
-					rewrite_mapper.replace(original_order_id, new_order_id)
-
-			if should_forward_message:
+			if ticker_filter.should_forward(message):
 				if is_fastforwarding_before_start:
 					skipped_before_start += 1
 					continue
 
-				original_order_id = extract_order_id(msg_type, message.payload)
+				original_order_id = extract_order_id(msg_type, message.payload) 
+				replacement_order_id = extract_replacement_order_id(msg_type, message.payload)
 				outbound_message = message.raw
+
+				# Update orderbook for D/E/X messages (order already exists from Add).
+				if orderbook_mode and orderbook and msg_type in ("X", "D", "E"):
+					if original_order_id is not None:
+						if msg_type == "X":  # Cancel
+							shares = extract_shares(msg_type, message.payload)
+							if shares is not None:
+								orderbook.cancel_shares(original_order_id, shares, ts_ns or 0)
+						elif msg_type == "D":  # Delete
+							orderbook.delete_order(original_order_id, ts_ns or 0)
+						elif msg_type == "E":  # Execute
+							shares = extract_shares(msg_type, message.payload)
+							if shares is not None:
+								orderbook.execute_shares(original_order_id, shares, ts_ns or 0)
 
 				if rewrite_mapper is not None:
 					if original_order_id is None:
@@ -1501,8 +1500,30 @@ def forward(
 						LOGGER.warning("Dropping %s: missing order ID for rewrite", msg_type)
 						continue
 
+					mapped_replacement_order_id: Optional[int] = None
 					if msg_type in ("A", "F"):
 						mapped_order_id = rewrite_mapper.map_add(original_order_id)
+					elif msg_type == "U":
+						mapped_order_id = rewrite_mapper.get_mapped(original_order_id)
+						if mapped_order_id is None:
+							dropped += 1
+							dropped_rewrite_unmapped += 1
+							LOGGER.warning(
+								"Dropping %s for original order_id=%s: no mapped forwarded ID",
+								msg_type,
+								original_order_id,
+							)
+							continue
+						if replacement_order_id is None:
+							dropped += 1
+							dropped_rewrite_unmapped += 1
+							LOGGER.warning(
+								"Dropping %s for original order_id=%s: missing replacement order ID",
+								msg_type,
+								original_order_id,
+							)
+							continue
+						mapped_replacement_order_id = rewrite_mapper.map_add(replacement_order_id)
 					else:
 						mapped_order_id = rewrite_mapper.get_mapped(original_order_id)
 						if mapped_order_id is None:
@@ -1519,6 +1540,7 @@ def forward(
 						message.raw,
 						msg_type,
 						mapped_order_id,
+						replacement_order_id=mapped_replacement_order_id,
 					)
 					if rewritten is None:
 						dropped += 1
@@ -1570,12 +1592,12 @@ def forward(
 				forwarded += 1
 				forwarded_bytes += len(outbound_message)
 
-				# Remove rewrite mapping after forwarding terminal D/E/X updates.
+				# Remove rewrite mapping after forwarding terminal/cancel-replace updates.
 				if (
 					rewrite_mapper is not None
 					and orderbook_mode
 					and orderbook is not None
-					and msg_type in ("X", "D", "E")
+					and msg_type in ("X", "D", "E", "C", "U")
 					and original_order_id is not None
 					and not orderbook.has_order(original_order_id)
 				):

@@ -90,7 +90,7 @@ class OrderBook:
     - _bids: SortedDict[int, PriceLevel] sorted ascending (best bid = max key)
     - _asks: SortedDict[int, PriceLevel] sorted ascending (best ask = min key)
 
-    The orderbook also provides ticker resolution for messages (D/E/X)
+    The orderbook also provides ticker resolution for messages (C/D/E/U/X)
     that don't contain ticker fields.
     """
 
@@ -131,13 +131,13 @@ class OrderBook:
         self._last_timestamp_ns: Optional[int] = None
 
     # -------------------------------------------------------------------------
-    # Ticker resolution (for D/E/X messages that lack ticker field)
+    # Ticker resolution (for C/D/E/U/X messages that lack ticker field)
     # -------------------------------------------------------------------------
 
     def get_ticker(self, order_id: int) -> Optional[str]:
         """Resolve ticker symbol from order ID.
 
-        Used by TickerFilter for messages (D/E/X) that don't contain ticker.
+        Used by TickerFilter for messages (C/D/E/U/X) that don't contain ticker.
 
         Args:
             order_id: The order reference number

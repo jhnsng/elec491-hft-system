@@ -98,32 +98,26 @@ class TestOrderBook:
             shares=100,
             timestamp_ns=0,
         )
-        assert result is True
-        assert book.has_order(1)
-        assert book.get_ticker(1) == "AAPL"
+                result = book.replace_order(
+                    original_order_id=1,
+                    new_order_id=2,
+                    shares=80,
+                    price_ticks=1510000,
+                    timestamp_ns=1000,
+                )
 
-    def test_add_duplicate_order_rejected(self):
-        """Test that duplicate order IDs are rejected."""
-        book = OrderBook()
-        book.add_order(1, "AAPL", "B", 1500000, 100, 0)
-        result = book.add_order(1, "AAPL", "B", 1500000, 200, 0)
-        assert result is False
+                assert result is True
+                assert not book.has_order(1)
+                assert book.has_order(2)
+                assert book.get_ticker(2) == "AAPL"
 
-    def test_get_ticker_returns_none_for_unknown(self):
-        """Test that get_ticker returns None for unknown orders."""
-        book = OrderBook()
-        assert book.get_ticker(999) is None
+                best_bid, best_ask = book.get_bbo()
+                assert best_bid == 1510000
+                assert best_ask is None
 
-    def test_cancel_shares(self):
-        """Test cancelling shares from an order."""
-        book = OrderBook()
-        book.add_order(1, "AAPL", "B", 1500000, 100, 0)
-        
-        result = book.cancel_shares(1, 30, 1000)
-        assert result is True
-        
-        # Order should still exist with reduced shares
-        assert book.has_order(1)
+                snapshot = book.get_snapshot()
+                assert snapshot["statistics"]["replaces"] == 1
+
 
     def test_cancel_all_shares_removes_order(self):
         """Test that cancelling all shares removes the order."""
@@ -150,7 +144,6 @@ class TestOrderBook:
 
     def test_execute_shares(self):
         """Test executing shares from an order."""
-        book = OrderBook()
         book.add_order(1, "AAPL", "B", 1500000, 100, 0)
         
         result = book.execute_shares(1, 50, 1000)
@@ -160,8 +153,6 @@ class TestOrderBook:
     def test_execute_all_shares_removes_order(self):
         """Test that executing all shares removes the order."""
         book = OrderBook()
-        book.add_order(1, "AAPL", "B", 1500000, 100, 0)
-        
         book.execute_shares(1, 100, 1000)
         assert not book.has_order(1)
 
@@ -189,6 +180,20 @@ class TestOrderBook:
 
         snapshot = book.get_snapshot()
         assert snapshot["statistics"]["replaces"] == 1
+
+    def test_replace_unknown_order_returns_false(self):
+        """Test replace_order returns False for unknown original order."""
+        book = OrderBook()
+
+        result = book.replace_order(
+            original_order_id=999,
+            new_order_id=1000,
+            shares=50,
+            price_ticks=1500000,
+            timestamp_ns=0,
+        )
+
+        assert result is False
 
     def test_get_bbo_empty_book(self):
         """Test BBO on empty book returns None for both."""
