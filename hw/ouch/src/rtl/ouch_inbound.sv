@@ -86,7 +86,7 @@ module ouch_inbound (
                 fifo_mem[wr_ptr].qty      <= algo_qty;
                 fifo_mem[wr_ptr].side     <= algo_side;
                 fifo_mem[wr_ptr].symbol   <= algo_symbol;
-                fifo_mem[wr_ptr].price    <= algo_price_ticks;
+                fifo_mem[wr_ptr].price    <= algo_price_ticks >> 8;
                 fifo_mem[wr_ptr].userref  <= (algo_cmd_type == 2'b00) ? userref_counter : algo_orig_ref;
                 
                 wr_ptr <= wr_ptr + 3'd1;
