@@ -86,7 +86,10 @@ module ouch_inbound (
                 fifo_mem[wr_ptr].qty      <= algo_qty;
                 fifo_mem[wr_ptr].side     <= algo_side;
                 fifo_mem[wr_ptr].symbol   <= algo_symbol;
-                fifo_mem[wr_ptr].price    <= algo_price_ticks >> 8;
+                
+                // FIXED: Divide by 256 to strip internal fractions, then multiply by 100 for OUCH spec!
+                fifo_mem[wr_ptr].price    <= (algo_price_ticks) * 100;
+                
                 fifo_mem[wr_ptr].userref  <= (algo_cmd_type == 2'b00) ? userref_counter : algo_orig_ref;
                 
                 wr_ptr <= wr_ptr + 3'd1;
@@ -206,8 +209,7 @@ module ouch_inbound (
                 6'd16: return cmd_r.symbol[15:8];
                 6'd17: return cmd_r.symbol[7:0];
 
-                // Price
-                /*
+                // FIXED: Clean 1:1 Price byte mapping (no more lazy byte shifting!)
                 6'd18: return cmd_r.price[63:56];
                 6'd19: return cmd_r.price[55:48];
                 6'd20: return cmd_r.price[47:40];
@@ -216,16 +218,6 @@ module ouch_inbound (
                 6'd23: return cmd_r.price[23:16];
                 6'd24: return cmd_r.price[15:8];
                 6'd25: return cmd_r.price[7:0];
-                */
-
-                6'd18: return cmd_r.price[55:48];
-                6'd19: return cmd_r.price[47:40];
-                6'd20: return cmd_r.price[39:32];
-                6'd21: return cmd_r.price[31:24];
-                6'd22: return cmd_r.price[23:16];
-                6'd23: return cmd_r.price[15:8];
-                6'd24: return cmd_r.price[7:0];
-                6'd25: return 8'h00;
 
                 // Fixed fields
                 6'd26: return TIF_DAY;
