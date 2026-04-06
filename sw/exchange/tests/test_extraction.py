@@ -538,6 +538,21 @@ class TestForwardableITCHTypes:
         assert filt.should_forward(msg) is True
 
 
+class TestITCHStreamDiagnostics:
+    def test_warns_on_incomplete_trailing_message(self, tmp_path, caplog):
+        complete = _make_add_order_message(order_id=1, ticker="AAPL", timestamp_ns=1).raw
+        truncated = _make_add_order_message(order_id=2, ticker="AAPL", timestamp_ns=2).raw[:8]
+        stream_path = tmp_path / "truncated.itch"
+        stream_path.write_bytes(complete + truncated)
+
+        caplog.set_level("WARNING", logger="data_forwarder")
+        parsed = list(data_forwarder.ITCHStream(stream_path, chunk_size=16))
+
+        assert len(parsed) == 1
+        assert "incomplete message" in caplog.text
+        assert "truncated.itch" in caplog.text
+
+
 class TestDemoBreakpoints:
     """Tests for demo breakpoint parsing helpers."""
 
@@ -670,6 +685,28 @@ class _RecordingOrderBook:
 
     def log_summary(self, logger) -> None:
         del logger
+
+
+class TestForwardLoopStopReason:
+    def test_logs_input_exhausted_reason(self, monkeypatch, caplog):
+        monkeypatch.setattr(data_forwarder, "UDPForwarder", _NoopUDPForwarder)
+        monkeypatch.setattr(data_forwarder, "ITCHStream", lambda *_args, **_kwargs: iter(()))
+
+        cfg = data_forwarder.ForwarderConfig(
+            itch_file=Path("/tmp/unused.itch"),
+            tickers={"AAPL"},
+            udp=data_forwarder.UDPSettings(host="127.0.0.1", port=9999),
+            reader=data_forwarder.ReaderSettings(
+                chunk_size=1024,
+                max_buffer_bytes=1024 * 1024,
+                stats_interval=9999.0,
+            ),
+        )
+
+        caplog.set_level("INFO", logger="data_forwarder")
+        data_forwarder.forward(cfg)
+
+        assert "Forward loop completed: reason=input_exhausted" in caplog.text
 
 
 class _NoopUDPForwarder:

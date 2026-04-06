@@ -830,6 +830,8 @@ class ITCHStream:
 	def __iter__(self) -> Iterator[Message]:
 		buffer = bytearray()
 		chunk = bytearray(self.chunk_size)
+		total_bytes_read = 0
+		message_count = 0
 
 		with self.file_path.open("rb", buffering=0) as handle:
 			reader: io.RawIOBase = handle  # RawIOBase supporting readinto
@@ -837,6 +839,7 @@ class ITCHStream:
 				read = reader.readinto(chunk)
 				if not read:
 					break
+				total_bytes_read += read
 				buffer.extend(chunk[:read])
 
 				cursor = 0
@@ -851,14 +854,49 @@ class ITCHStream:
 
 					msg_bytes = bytes(view[cursor : cursor + total])
 					yield Message(msg_bytes)
+					message_count += 1
 					cursor += total
 
-				if cursor:
-					# release the export before resizing the bytearray
-					view.release()
-					del buffer[:cursor]
-			else:
+				# Always release before resizing the source bytearray.
 				view.release()
+				if cursor:
+					del buffer[:cursor]
+
+		if buffer:
+			trailing = len(buffer)
+			offset = total_bytes_read - trailing
+			if trailing < 3:
+				LOGGER.warning(
+					"ITCH stream ended with %s trailing byte(s) at byte offset %s in %s. "
+					"Parsed messages=%s. Input file may be truncated.",
+					trailing,
+					offset,
+					self.file_path,
+					message_count,
+				)
+			else:
+				expected_total = int.from_bytes(buffer[0:2], "big") + 2
+				if expected_total > trailing:
+					LOGGER.warning(
+						"ITCH stream ended with an incomplete message at byte offset %s in %s "
+						"(need %s bytes, have %s). Parsed messages=%s. "
+						"Input file may be truncated or corrupted.",
+						offset,
+						self.file_path,
+						expected_total,
+						trailing,
+						message_count,
+					)
+				else:
+					LOGGER.warning(
+						"ITCH stream ended with %s trailing byte(s) at byte offset %s in %s "
+						"after %s parsed messages. Parser could not align the remaining bytes "
+						"to a valid message boundary.",
+						trailing,
+						offset,
+						self.file_path,
+						message_count,
+					)
 
 
 class PreloadedITCHStream:
@@ -1436,6 +1474,7 @@ def forward(
 	forwarded_bytes = 0
 	skipped_before_start = 0
 	dropped_rewrite_unmapped = 0
+	stop_reason = "running"
 	last_stats = time.monotonic()
 	last_snapshot = time.monotonic()
 	start_time = last_stats
@@ -1582,6 +1621,7 @@ def forward(
 					buffer_queue.put(outbound_message)
 				except QueueClosed:
 					LOGGER.warning("Queue closed while enqueueing; aborting read loop")
+					stop_reason = "queue_closed"
 					break
 
 				# Apply orderbook mutations only after successful enqueue so software
@@ -1657,12 +1697,15 @@ def forward(
 						action = demo_debugger.on_forwarded(forwarded)
 					except DemoDebuggerNonInteractive as exc:
 						LOGGER.error("%s", exc)
+						stop_reason = "demo_debugger_non_interactive"
 						break
 					if action == "stop":
 						LOGGER.info("Demo debugger requested stop at message %s", forwarded)
+						stop_reason = "demo_debugger_stop"
 						break
 				if max_messages is not None and forwarded >= max_messages:
 					LOGGER.info("Demo limit reached (%s messages)", forwarded)
+					stop_reason = "max_messages_reached"
 					break
 			else:
 				dropped += 1
@@ -1673,6 +1716,7 @@ def forward(
 					"Benchmark timeout reached after %.1f seconds; stopping early",
 					cfg.reader.benchmark_timeout_s,
 				)
+				stop_reason = "benchmark_timeout"
 				break
 
 			if now - last_stats >= cfg.reader.stats_interval:
@@ -1696,10 +1740,29 @@ def forward(
 					snapshot = _build_runtime_snapshot(orderbook, ouch_metrics)
 					_save_runtime_snapshot(orderbook_snapshot_path, snapshot)
 					last_snapshot = now
+		else:
+			stop_reason = "input_exhausted"
 
 	except KeyboardInterrupt:
+		stop_reason = "keyboard_interrupt"
 		LOGGER.info("Interrupted by user; shutting down gracefully...")
 	finally:
+		if stop_reason == "running":
+			stop_reason = "terminated"
+		last_ts_str = format_itch_timestamp(last_sent_ts_ns) if last_sent_ts_ns is not None else "-"
+		LOGGER.info(
+			"Forward loop completed: reason=%s forwarded=%s dropped=%s rewrite_dropped=%s "
+			"prestart_skipped=%s parsed_bytes=%s forwarded_bytes=%s last_ts=%s",
+			stop_reason,
+			forwarded,
+			dropped,
+			dropped_rewrite_unmapped,
+			skipped_before_start,
+			parsed_bytes,
+			forwarded_bytes,
+			last_ts_str,
+		)
+
 		# If OUCH is active, wait for demo clients to disconnect before tearing down
 		if ouch_server is not None:
 			if demo_mode:
