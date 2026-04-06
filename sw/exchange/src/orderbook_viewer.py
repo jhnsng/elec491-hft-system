@@ -131,7 +131,6 @@ class OuchDashboardViewer:
         )
         self.volume_profile_plot.addItem(self.bid_profile_bars)
         self.volume_profile_plot.addItem(self.ask_profile_bars)
-        market_splitter.addWidget(self.volume_profile_plot)
 
         self.best_price_plot = pg.PlotWidget(title="Best Bid / Ask Over Time")
         self.best_price_plot.showGrid(x=True, y=True, alpha=0.2)
@@ -145,9 +144,10 @@ class OuchDashboardViewer:
             pen=pg.mkPen(color="#ff6b6b", width=2), name="Best Ask"
         )
         market_splitter.addWidget(self.best_price_plot)
+        market_splitter.addWidget(self.volume_profile_plot)
 
         self.volume_profile_plot.setYLink(self.best_price_plot)
-        market_splitter.setSizes([330, 870])
+        market_splitter.setSizes([870, 330])
         plots_splitter.addWidget(market_splitter)
 
         perf_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
