@@ -11,6 +11,27 @@
 #include <sys/mman.h>
 #include <inttypes.h>
 #include <time.h>
+#include <signal.h>
+
+/* ============================================================
+ * Global counters for message types
+ * ============================================================ */
+
+static uint64_t count_adds = 0;
+static uint64_t count_cancels = 0;
+static uint64_t count_deletes = 0;
+static uint64_t count_executes = 0;
+static uint64_t count_replaces = 0;
+
+/* ============================================================
+ * Signal handler for SIGINT (Ctrl+C)
+ * ============================================================ */
+
+void sigint_handler(int sig) {
+    printf("Operations: adds=%" PRIu64 " cancels=%" PRIu64 " deletes=%" PRIu64 " executes=%" PRIu64 " replaces=%" PRIu64 "\n",
+           count_adds, count_cancels, count_deletes, count_executes, count_replaces);
+    exit(0);
+}
 
 /* ============================================================
  * Configuration
@@ -195,6 +216,9 @@ int main(void)
 
     FIFO_write_status_ptr = (unsigned int *)((char*)fifo + 0x20);
 
+    // Set up signal handler for SIGINT
+    signal(SIGINT, sigint_handler);
+
     printf("NetIO: listening for ITCH UDP on port %d\n", LISTEN_PORT);
 
     int warmup = 0;
@@ -303,6 +327,7 @@ int main(void)
             switch (type) {
                 case 'A': // Add Order – No MPID Attribution
                 case 'F': { // Add Order with MPID Attribution
+                    count_adds++;
                     memcpy(&order_id, &msg[11], 8);
                     memcpy(&quantity, &msg[20], 4);
                     memcpy(&price, &msg[32], 4);
@@ -318,6 +343,7 @@ int main(void)
                     break;
                     }
                 case 'C': // Order Executed with Price
+                    count_executes++;
                     memcpy(&order_id, &msg[11], 8);
                     memcpy(&quantity, &msg[19], 4);
 
@@ -328,6 +354,7 @@ int main(void)
                     //       order_id, quantity);
                     break;
                 case 'E': // Order Executed
+                    count_executes++;
                     memcpy(&order_id, &msg[11], 8);
                     memcpy(&quantity, &msg[19], 4);
 
@@ -339,6 +366,7 @@ int main(void)
                     break;
 
                 case 'X': // Order Cancel
+                    count_cancels++;
                     memcpy(&order_id, &msg[11], 8);
                     memcpy(&quantity, &msg[19], 4);
                     
@@ -350,6 +378,7 @@ int main(void)
                     break;
 
                 case 'D': // Order Delete
+                    count_deletes++;
                     memcpy(&order_id, &msg[11], 8);
 
                     clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
@@ -360,6 +389,7 @@ int main(void)
                     break;
 
                 case 'U': // Order Replace
+                    count_replaces++;
                     is_replace = true;
 
                     memcpy(&old_id, &msg[11], 8);
