@@ -1,4 +1,5 @@
 """Tests for data_forwarder extraction functions."""
+import json
 import pytest
 import tempfile
 
@@ -553,6 +554,29 @@ class TestITCHStreamDiagnostics:
         assert "truncated.itch" in caplog.text
 
 
+class TestSnapshotPersistence:
+    def test_save_runtime_snapshot_retries_on_permission_error(self, monkeypatch, tmp_path):
+        snapshot_path = tmp_path / "snapshot.json"
+        tmp_snapshot_path = snapshot_path.with_name(snapshot_path.name + ".tmp")
+        replace_attempts = {"count": 0}
+
+        original_replace = Path.replace
+
+        def _flaky_replace(self: Path, target: Path):
+            if self == tmp_snapshot_path and replace_attempts["count"] == 0:
+                replace_attempts["count"] += 1
+                raise PermissionError("simulated lock")
+            return original_replace(self, target)
+
+        monkeypatch.setattr(Path, "replace", _flaky_replace)
+        monkeypatch.setattr(data_forwarder.time, "sleep", lambda _s: None)
+
+        data_forwarder._save_runtime_snapshot(snapshot_path, {"ok": True, "n": 7})
+
+        assert replace_attempts["count"] == 1
+        assert json.loads(snapshot_path.read_text(encoding="utf-8")) == {"ok": True, "n": 7}
+
+
 class TestDemoBreakpoints:
     """Tests for demo breakpoint parsing helpers."""
 
@@ -707,6 +731,32 @@ class TestForwardLoopStopReason:
         data_forwarder.forward(cfg)
 
         assert "Forward loop completed: reason=input_exhausted" in caplog.text
+
+    def test_logs_exception_reason_on_unhandled_error(self, monkeypatch, caplog):
+        monkeypatch.setattr(data_forwarder, "UDPForwarder", _NoopUDPForwarder)
+
+        def _raising_stream(*_args, **_kwargs):
+            raise RuntimeError("simulated stream failure")
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(data_forwarder, "ITCHStream", _raising_stream)
+
+        cfg = data_forwarder.ForwarderConfig(
+            itch_file=Path("/tmp/unused.itch"),
+            tickers={"AAPL"},
+            udp=data_forwarder.UDPSettings(host="127.0.0.1", port=9999),
+            reader=data_forwarder.ReaderSettings(
+                chunk_size=1024,
+                max_buffer_bytes=1024 * 1024,
+                stats_interval=9999.0,
+            ),
+        )
+
+        caplog.set_level("INFO", logger="data_forwarder")
+        with pytest.raises(RuntimeError, match="simulated stream failure"):
+            data_forwarder.forward(cfg)
+
+        assert "Forward loop completed: reason=exception:RuntimeError" in caplog.text
 
 
 class _NoopUDPForwarder:

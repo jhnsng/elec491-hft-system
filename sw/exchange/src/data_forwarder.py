@@ -1376,12 +1376,33 @@ def _build_runtime_snapshot(
 
 
 def _save_runtime_snapshot(path: Path, snapshot: Dict[str, object]) -> None:
-	"""Persist snapshot atomically so the viewer never sees partial JSON."""
+	"""Persist snapshot atomically so the viewer never sees partial JSON.
+
+	On Windows, replacing a file can transiently fail if another process has the
+	target open (for example, a viewer polling the snapshot). Retry briefly to
+	avoid aborting the forward loop on short-lived file locks.
+	"""
 	path.parent.mkdir(parents=True, exist_ok=True)
 	tmp_path = path.with_name(path.name + ".tmp")
 	with tmp_path.open("w", encoding="utf-8") as handle:
 		json.dump(snapshot, handle, indent=2)
-	tmp_path.replace(path)
+
+	# Keep this bounded and short to avoid impacting normal throughput.
+	max_replace_attempts = 20
+	retry_sleep_s = 0.01
+	last_exc: Optional[PermissionError] = None
+	for attempt in range(max_replace_attempts):
+		try:
+			tmp_path.replace(path)
+			return
+		except PermissionError as exc:
+			last_exc = exc
+			if attempt == max_replace_attempts - 1:
+				break
+			time.sleep(retry_sleep_s)
+
+	assert last_exc is not None
+	raise last_exc
 
 
 ###############################################################################
@@ -1746,6 +1767,9 @@ def forward(
 	except KeyboardInterrupt:
 		stop_reason = "keyboard_interrupt"
 		LOGGER.info("Interrupted by user; shutting down gracefully...")
+	except Exception as exc:
+		stop_reason = f"exception:{type(exc).__name__}"
+		raise
 	finally:
 		if stop_reason == "running":
 			stop_reason = "terminated"
