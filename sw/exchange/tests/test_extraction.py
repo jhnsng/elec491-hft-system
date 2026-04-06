@@ -684,6 +684,17 @@ class _NoopUDPForwarder:
         self._queue.close()
 
 
+class _QueueClosingUDPForwarder:
+    def __init__(self, _settings, queue):
+        self._queue = queue
+
+    def start(self) -> None:
+        self._queue.close()
+
+    def stop(self, *, drain: bool = True) -> None:
+        del drain
+
+
 class _CapturingUDPForwarder:
     last_instance = None
 
@@ -878,6 +889,33 @@ class TestReplayFastForward:
         assert orderbook.executed_order_ids == []
 
 
+class TestOrderBookCommitSafety:
+    def test_add_order_committed_only_after_enqueue(self, monkeypatch):
+        messages = [_make_add_order_message(order_id=42, ticker="AAPL", timestamp_ns=100)]
+
+        monkeypatch.setattr(data_forwarder, "OrderBook", _RecordingOrderBook)
+        monkeypatch.setattr(data_forwarder, "UDPForwarder", _QueueClosingUDPForwarder)
+        monkeypatch.setattr(data_forwarder, "ITCHStream", lambda *_args, **_kwargs: iter(messages))
+
+        cfg = data_forwarder.ForwarderConfig(
+            itch_file=Path("/tmp/unused.itch"),
+            tickers={"AAPL"},
+            udp=data_forwarder.UDPSettings(host="127.0.0.1", port=9999),
+            reader=data_forwarder.ReaderSettings(
+                chunk_size=1024,
+                max_buffer_bytes=1024 * 1024,
+                stats_interval=9999.0,
+            ),
+        )
+
+        data_forwarder.forward(cfg, orderbook_mode=True)
+
+        orderbook = _RecordingOrderBook.last_instance
+        assert orderbook is not None
+        assert orderbook.added_order_ids == []
+        assert orderbook.has_order(42) is False
+
+
 class TestOrderIDRewriteForwarding:
     def test_rewrites_add_and_related_cancel_execute(self, monkeypatch):
         messages = [
@@ -1031,3 +1069,58 @@ class TestOrderIDRewriteForwarding:
         assert forwarder is not None
         assert forwarder.sent_messages == []
         assert "no mapped forwarded ID" in caplog.text
+
+    def test_dropped_rewrite_does_not_mutate_local_orderbook(self, monkeypatch, caplog):
+        messages = [
+            _make_add_order_message(order_id=701, ticker="AAPL", timestamp_ns=100),
+            _make_cancel_message(order_id=701, timestamp_ns=110),
+        ]
+
+        class _DropResolvedMapper:
+            def __init__(self, start_id: int = 1):
+                self._next_id = start_id
+
+            def map_add(self, original_order_id: int) -> int:
+                del original_order_id
+                mapped = self._next_id
+                self._next_id += 1
+                return mapped
+
+            def get_mapped(self, original_order_id: int):
+                del original_order_id
+                return None
+
+            def discard(self, original_order_id: int) -> None:
+                del original_order_id
+
+        monkeypatch.setattr(data_forwarder, "OrderBook", _RecordingOrderBook)
+        monkeypatch.setattr(data_forwarder, "UDPForwarder", _CapturingUDPForwarder)
+        monkeypatch.setattr(data_forwarder, "ITCHStream", lambda *_args, **_kwargs: iter(messages))
+        monkeypatch.setattr(data_forwarder, "SequentialOrderIDMapper", _DropResolvedMapper)
+
+        cfg = data_forwarder.ForwarderConfig(
+            itch_file=Path("/tmp/unused.itch"),
+            tickers={"AAPL"},
+            udp=data_forwarder.UDPSettings(host="127.0.0.1", port=9999),
+            reader=data_forwarder.ReaderSettings(
+                chunk_size=1024,
+                max_buffer_bytes=1024 * 1024,
+                stats_interval=9999.0,
+            ),
+            order_id_rewrite=data_forwarder.OrderIDRewriteSettings(enabled=True, start_id=1),
+        )
+
+        caplog.set_level("WARNING", logger="data_forwarder")
+        data_forwarder.forward(cfg, orderbook_mode=True)
+
+        forwarder = _CapturingUDPForwarder.last_instance
+        assert forwarder is not None
+        assert len(forwarder.sent_messages) == 1
+        assert _extract_message_order_id(forwarder.sent_messages[0]) == 1
+        assert "no mapped forwarded ID" in caplog.text
+
+        orderbook = _RecordingOrderBook.last_instance
+        assert orderbook is not None
+        assert orderbook.added_order_ids == [701]
+        assert orderbook.cancelled_order_ids == []
+        assert orderbook.has_order(701)
