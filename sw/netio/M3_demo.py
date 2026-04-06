@@ -8,7 +8,7 @@ DE1_PORT = 12345
 
 # Add the outputs directory to the Python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
-vectors_dir = os.path.join(current_dir, "..", "..", "gen_test_vectors", "outputs")
+vectors_dir = os.path.join(current_dir, "..", "..", "gen_test_vectors", "outputs", "NetIO_Test")
 sys.path.append(os.path.abspath(vectors_dir))
 
 # Import the auto-generated test vectors

@@ -18,7 +18,11 @@ from data_forwarder import (
     _parse_replay_settings,
     SequentialOrderIDMapper,
     extract_order_id,
+    extract_replacement_order_id,
     extract_price_ticks,
+    extract_replaced_order_id,
+    extract_replaced_price_ticks,
+    extract_replaced_shares,
     extract_side,
     extract_shares,
     parse_itch_time_24h_to_ns,
@@ -90,6 +94,24 @@ class TestExtractOrderId:
         result = extract_order_id("E", memoryview(payload))
         assert result == order_id
 
+    def test_extract_order_id_execute_with_price(self):
+        """Test extracting order ID from Order Executed With Price (C) message."""
+        order_id = 44444444444444
+        payload = bytearray(36)
+        payload[10:18] = order_id.to_bytes(8, "big")
+
+        result = extract_order_id("C", memoryview(payload))
+        assert result == order_id
+
+    def test_extract_order_id_replace_original(self):
+        """Test extracting original order ID from Order Replace (U) message."""
+        order_id = 55555555555555
+        payload = bytearray(34)
+        payload[10:18] = order_id.to_bytes(8, "big")
+
+        result = extract_order_id("U", memoryview(payload))
+        assert result == order_id
+
     def test_extract_order_id_unsupported_type(self):
         """Test that unsupported message types return None."""
         payload = bytearray(35)
@@ -101,6 +123,26 @@ class TestExtractOrderId:
         payload = bytearray(10)  # Too short
         result = extract_order_id("A", memoryview(payload))
         assert result is None
+
+
+class TestExtractReplacementOrderId:
+    """Tests for extraction of replacement order reference in U messages."""
+
+    def test_extract_replacement_order_id_replace(self):
+        new_order_id = 66666666666666
+        payload = bytearray(34)
+        payload[18:26] = new_order_id.to_bytes(8, "big")
+
+        result = extract_replacement_order_id("U", memoryview(payload))
+        assert result == new_order_id
+
+    def test_extract_replacement_order_id_non_replace_returns_none(self):
+        payload = bytearray(34)
+        assert extract_replacement_order_id("A", memoryview(payload)) is None
+
+    def test_extract_replacement_order_id_payload_too_short(self):
+        payload = bytearray(20)
+        assert extract_replacement_order_id("U", memoryview(payload)) is None
 
 
 class TestExtractPriceTicks:
@@ -123,6 +165,24 @@ class TestExtractPriceTicks:
         payload[31:35] = price_ticks.to_bytes(4, "big")
         
         result = extract_price_ticks("F", memoryview(payload))
+        assert result == price_ticks
+
+    def test_extract_price_executed_with_price(self):
+        """Test extracting execution price from Order Executed With Price (C)."""
+        price_ticks = 1754321
+        payload = bytearray(35)
+        payload[31:35] = price_ticks.to_bytes(4, "big")
+
+        result = extract_price_ticks("C", memoryview(payload))
+        assert result == price_ticks
+
+    def test_extract_price_replace(self):
+        """Test extracting replacement price from Order Replace (U)."""
+        price_ticks = 1999900
+        payload = bytearray(34)
+        payload[30:34] = price_ticks.to_bytes(4, "big")
+
+        result = extract_price_ticks("U", memoryview(payload))
         assert result == price_ticks
 
     def test_extract_price_unsupported_type(self):
@@ -219,6 +279,23 @@ class TestExtractShares:
         result = extract_shares("E", memoryview(payload))
         assert result == executed_shares
 
+    def test_extract_shares_execute_with_price(self):
+        """Test extracting executed shares from Order Executed With Price (C)."""
+        executed_shares = 175
+        payload = bytearray(36)
+        payload[18:22] = executed_shares.to_bytes(4, "big")
+
+        result = extract_shares("C", memoryview(payload))
+        assert result == executed_shares
+
+    def test_extract_shares_replace_new_total(self):
+        """Test extracting new total shares from Order Replace (U)."""
+        new_total_shares = 250
+        payload = bytearray(34)
+        payload[26:30] = new_total_shares.to_bytes(4, "big")
+
+        result = extract_shares("U", memoryview(payload))
+        assert result == new_total_shares
     def test_extract_shares_delete_returns_none(self):
         """Test that Order Delete (D) returns None (no shares field)."""
         payload = bytearray(20)
@@ -257,6 +334,34 @@ class TestExtractSharesLargeValues:
         
         result = extract_shares("A", memoryview(payload))
         assert result == 0
+
+
+class TestExtractReplaceFields:
+    """Tests for replace-message extraction helpers."""
+
+    def test_extract_replaced_order_id(self):
+        new_order_id = 66666666666666
+        payload = bytearray(34)
+        payload[18:26] = new_order_id.to_bytes(8, "big")
+
+        result = extract_replaced_order_id(memoryview(payload))
+        assert result == new_order_id
+
+    def test_extract_replaced_shares(self):
+        shares = 1234
+        payload = bytearray(34)
+        payload[26:30] = shares.to_bytes(4, "big")
+
+        result = extract_replaced_shares(memoryview(payload))
+        assert result == shares
+
+    def test_extract_replaced_price_ticks(self):
+        price_ticks = 2_999_500
+        payload = bytearray(34)
+        payload[30:34] = price_ticks.to_bytes(4, "big")
+
+        result = extract_replaced_price_ticks(memoryview(payload))
+        assert result == price_ticks
 
 
 class TestParseITCHTime24h:
@@ -362,6 +467,33 @@ class TestOrderIDRewriteHelpers:
         rewritten_id = extract_order_id(rewritten_msg.msg_type, rewritten_msg.payload)
         assert rewritten_id == 999
 
+    def test_mapper_replace_carries_mapping(self):
+        mapper = SequentialOrderIDMapper(start_id=100)
+        assert mapper.map_add(1001) == 100
+
+        assert mapper.replace(1001, 2001) is True
+        assert mapper.get_mapped(1001) is None
+        assert mapper.get_mapped(2001) == 100
+
+    def test_rewrite_order_id_in_raw_message_replace(self):
+        msg = _make_replace_message(
+            original_order_id=123,
+            new_order_id=456,
+            timestamp_ns=100,
+        )
+
+        rewritten = rewrite_order_id_in_raw_message(
+            msg.raw,
+            "U",
+            new_order_id=1001,
+            replacement_order_id=1002,
+        )
+        assert rewritten is not None
+
+        original_id, new_id = _extract_replace_order_ids(rewritten)
+        assert original_id == 1001
+        assert new_id == 1002
+
 
 class TestForwardableITCHTypes:
     def test_should_forward_supported_add_order(self):
@@ -384,6 +516,23 @@ class TestForwardableITCHTypes:
         payload = bytearray(27)
         payload[10:18] = (123).to_bytes(8, "big")
         msg = _make_message("X", bytes(payload))
+
+        filt = TickerFilter({"AAPL"}, orderbook=_StubOrderBook("AAPL"))
+        assert filt.should_forward(msg) is True
+
+    def test_should_forward_execute_with_price_with_orderbook_resolution(self):
+        payload = bytearray(35)
+        payload[10:18] = (123).to_bytes(8, "big")
+        msg = _make_message("C", bytes(payload))
+
+        filt = TickerFilter({"AAPL"}, orderbook=_StubOrderBook("AAPL"))
+        assert filt.should_forward(msg) is True
+
+    def test_should_forward_replace_with_orderbook_resolution(self):
+        payload = bytearray(34)
+        payload[10:18] = (123).to_bytes(8, "big")
+        payload[18:26] = (456).to_bytes(8, "big")
+        msg = _make_message("U", bytes(payload))
 
         filt = TickerFilter({"AAPL"}, orderbook=_StubOrderBook("AAPL"))
         assert filt.should_forward(msg) is True
@@ -464,6 +613,7 @@ class _RecordingOrderBook:
         self.cancelled_order_ids = []
         self.deleted_order_ids = []
         self.executed_order_ids = []
+        self.replaced_order_ids = []
 
     def get_ticker(self, order_id: int):
         return self._ticker_by_order_id.get(order_id)
@@ -503,6 +653,21 @@ class _RecordingOrderBook:
         self._ticker_by_order_id.pop(order_id, None)
         return True
 
+    def replace_order(
+        self,
+        original_order_id: int,
+        new_order_id: int,
+        shares: int,
+        price_ticks: int,
+        timestamp_ns: int,
+    ) -> bool:
+        del shares, price_ticks, timestamp_ns
+        self.replaced_order_ids.append((original_order_id, new_order_id))
+        ticker = self._ticker_by_order_id.pop(original_order_id, None)
+        if ticker is not None:
+            self._ticker_by_order_id[new_order_id] = ticker
+        return True
+
     def log_summary(self, logger) -> None:
         del logger
 
@@ -517,6 +682,17 @@ class _NoopUDPForwarder:
     def stop(self, *, drain: bool = True) -> None:
         del drain
         self._queue.close()
+
+
+class _QueueClosingUDPForwarder:
+    def __init__(self, _settings, queue):
+        self._queue = queue
+
+    def start(self) -> None:
+        self._queue.close()
+
+    def stop(self, *, drain: bool = True) -> None:
+        del drain
 
 
 class _CapturingUDPForwarder:
@@ -572,6 +748,17 @@ class _AlwaysTickerOrderBook:
         del order_id, executed_shares, timestamp_ns
         return True
 
+    def replace_order(
+        self,
+        original_order_id: int,
+        new_order_id: int,
+        shares: int,
+        price_ticks: int,
+        timestamp_ns: int,
+    ) -> bool:
+        del original_order_id, new_order_id, shares, price_ticks, timestamp_ns
+        return True
+
     def has_order(self, order_id: int) -> bool:
         del order_id
         return False
@@ -614,11 +801,53 @@ def _make_execute_message(order_id: int, timestamp_ns: int, shares: int = 10) ->
     return _make_message("E", bytes(payload))
 
 
+def _make_execute_with_price_message(
+    order_id: int,
+    timestamp_ns: int,
+    shares: int = 10,
+    price_ticks: int = 1_000_100,
+) -> Message:
+    payload = bytearray(35)
+    payload[4:10] = timestamp_ns.to_bytes(6, "big")
+    payload[10:18] = order_id.to_bytes(8, "big")
+    payload[18:22] = shares.to_bytes(4, "big")
+    payload[23:31] = (999).to_bytes(8, "big")  # match number
+    payload[31 - 1] = ord("Y")  # printable at payload[30]
+    payload[31:35] = price_ticks.to_bytes(4, "big")
+    return _make_message("C", bytes(payload))
+
+
+def _make_replace_message(
+    original_order_id: int,
+    new_order_id: int,
+    timestamp_ns: int,
+    shares: int = 75,
+    price_ticks: int = 1_010_000,
+) -> Message:
+    payload = bytearray(34)
+    payload[4:10] = timestamp_ns.to_bytes(6, "big")
+    payload[10:18] = original_order_id.to_bytes(8, "big")
+    payload[18:26] = new_order_id.to_bytes(8, "big")
+    payload[26:30] = shares.to_bytes(4, "big")
+    payload[30:34] = price_ticks.to_bytes(4, "big")
+    return _make_message("U", bytes(payload))
+
+
 def _extract_message_order_id(raw_message: bytes) -> int:
     parsed = Message(raw_message)
     order_id = extract_order_id(parsed.msg_type, parsed.payload)
     assert order_id is not None
     return order_id
+
+
+def _extract_replace_order_ids(raw_message: bytes) -> tuple[int, int]:
+    parsed = Message(raw_message)
+    assert parsed.msg_type == "U"
+    original_id = extract_order_id(parsed.msg_type, parsed.payload)
+    new_id = extract_replacement_order_id(parsed.msg_type, parsed.payload)
+    assert original_id is not None
+    assert new_id is not None
+    return original_id, new_id
 
 
 class TestReplayFastForward:
@@ -658,6 +887,33 @@ class TestReplayFastForward:
         assert orderbook.cancelled_order_ids == []
         assert orderbook.deleted_order_ids == []
         assert orderbook.executed_order_ids == []
+
+
+class TestOrderBookCommitSafety:
+    def test_add_order_committed_only_after_enqueue(self, monkeypatch):
+        messages = [_make_add_order_message(order_id=42, ticker="AAPL", timestamp_ns=100)]
+
+        monkeypatch.setattr(data_forwarder, "OrderBook", _RecordingOrderBook)
+        monkeypatch.setattr(data_forwarder, "UDPForwarder", _QueueClosingUDPForwarder)
+        monkeypatch.setattr(data_forwarder, "ITCHStream", lambda *_args, **_kwargs: iter(messages))
+
+        cfg = data_forwarder.ForwarderConfig(
+            itch_file=Path("/tmp/unused.itch"),
+            tickers={"AAPL"},
+            udp=data_forwarder.UDPSettings(host="127.0.0.1", port=9999),
+            reader=data_forwarder.ReaderSettings(
+                chunk_size=1024,
+                max_buffer_bytes=1024 * 1024,
+                stats_interval=9999.0,
+            ),
+        )
+
+        data_forwarder.forward(cfg, orderbook_mode=True)
+
+        orderbook = _RecordingOrderBook.last_instance
+        assert orderbook is not None
+        assert orderbook.added_order_ids == []
+        assert orderbook.has_order(42) is False
 
 
 class TestOrderIDRewriteForwarding:
@@ -724,6 +980,69 @@ class TestOrderIDRewriteForwarding:
         outbound_ids = [_extract_message_order_id(raw) for raw in forwarder.sent_messages]
         assert outbound_ids == [1, 1, 2]
 
+    def test_rewrites_execute_with_price(self, monkeypatch):
+        messages = [
+            _make_add_order_message(order_id=501, ticker="AAPL", timestamp_ns=100),
+            _make_execute_with_price_message(order_id=501, timestamp_ns=110, shares=25),
+        ]
+
+        monkeypatch.setattr(data_forwarder, "OrderBook", _RecordingOrderBook)
+        monkeypatch.setattr(data_forwarder, "UDPForwarder", _CapturingUDPForwarder)
+        monkeypatch.setattr(data_forwarder, "ITCHStream", lambda *_args, **_kwargs: iter(messages))
+
+        cfg = data_forwarder.ForwarderConfig(
+            itch_file=Path("/tmp/unused.itch"),
+            tickers={"AAPL"},
+            udp=data_forwarder.UDPSettings(host="127.0.0.1", port=9999),
+            reader=data_forwarder.ReaderSettings(
+                chunk_size=1024,
+                max_buffer_bytes=1024 * 1024,
+                stats_interval=9999.0,
+            ),
+            order_id_rewrite=data_forwarder.OrderIDRewriteSettings(enabled=True, start_id=1),
+        )
+
+        data_forwarder.forward(cfg, orderbook_mode=True)
+
+        forwarder = _CapturingUDPForwarder.last_instance
+        assert forwarder is not None
+
+        outbound_ids = [_extract_message_order_id(raw) for raw in forwarder.sent_messages]
+        assert outbound_ids == [1, 1]
+
+    def test_rewrites_replace_and_followup_cancel(self, monkeypatch):
+        messages = [
+            _make_add_order_message(order_id=601, ticker="AAPL", timestamp_ns=100),
+            _make_replace_message(original_order_id=601, new_order_id=602, timestamp_ns=110),
+            _make_cancel_message(order_id=602, timestamp_ns=120),
+        ]
+
+        monkeypatch.setattr(data_forwarder, "OrderBook", _RecordingOrderBook)
+        monkeypatch.setattr(data_forwarder, "UDPForwarder", _CapturingUDPForwarder)
+        monkeypatch.setattr(data_forwarder, "ITCHStream", lambda *_args, **_kwargs: iter(messages))
+
+        cfg = data_forwarder.ForwarderConfig(
+            itch_file=Path("/tmp/unused.itch"),
+            tickers={"AAPL"},
+            udp=data_forwarder.UDPSettings(host="127.0.0.1", port=9999),
+            reader=data_forwarder.ReaderSettings(
+                chunk_size=1024,
+                max_buffer_bytes=1024 * 1024,
+                stats_interval=9999.0,
+            ),
+            order_id_rewrite=data_forwarder.OrderIDRewriteSettings(enabled=True, start_id=1),
+        )
+
+        data_forwarder.forward(cfg, orderbook_mode=True)
+
+        forwarder = _CapturingUDPForwarder.last_instance
+        assert forwarder is not None
+        assert len(forwarder.sent_messages) == 3
+
+        assert _extract_message_order_id(forwarder.sent_messages[0]) == 1
+        assert _extract_replace_order_ids(forwarder.sent_messages[1]) == (1, 2)
+        assert _extract_message_order_id(forwarder.sent_messages[2]) == 2
+
     def test_drops_xde_without_prior_mapping(self, monkeypatch, caplog):
         messages = [_make_cancel_message(order_id=404, timestamp_ns=100)]
 
@@ -750,3 +1069,58 @@ class TestOrderIDRewriteForwarding:
         assert forwarder is not None
         assert forwarder.sent_messages == []
         assert "no mapped forwarded ID" in caplog.text
+
+    def test_dropped_rewrite_does_not_mutate_local_orderbook(self, monkeypatch, caplog):
+        messages = [
+            _make_add_order_message(order_id=701, ticker="AAPL", timestamp_ns=100),
+            _make_cancel_message(order_id=701, timestamp_ns=110),
+        ]
+
+        class _DropResolvedMapper:
+            def __init__(self, start_id: int = 1):
+                self._next_id = start_id
+
+            def map_add(self, original_order_id: int) -> int:
+                del original_order_id
+                mapped = self._next_id
+                self._next_id += 1
+                return mapped
+
+            def get_mapped(self, original_order_id: int):
+                del original_order_id
+                return None
+
+            def discard(self, original_order_id: int) -> None:
+                del original_order_id
+
+        monkeypatch.setattr(data_forwarder, "OrderBook", _RecordingOrderBook)
+        monkeypatch.setattr(data_forwarder, "UDPForwarder", _CapturingUDPForwarder)
+        monkeypatch.setattr(data_forwarder, "ITCHStream", lambda *_args, **_kwargs: iter(messages))
+        monkeypatch.setattr(data_forwarder, "SequentialOrderIDMapper", _DropResolvedMapper)
+
+        cfg = data_forwarder.ForwarderConfig(
+            itch_file=Path("/tmp/unused.itch"),
+            tickers={"AAPL"},
+            udp=data_forwarder.UDPSettings(host="127.0.0.1", port=9999),
+            reader=data_forwarder.ReaderSettings(
+                chunk_size=1024,
+                max_buffer_bytes=1024 * 1024,
+                stats_interval=9999.0,
+            ),
+            order_id_rewrite=data_forwarder.OrderIDRewriteSettings(enabled=True, start_id=1),
+        )
+
+        caplog.set_level("WARNING", logger="data_forwarder")
+        data_forwarder.forward(cfg, orderbook_mode=True)
+
+        forwarder = _CapturingUDPForwarder.last_instance
+        assert forwarder is not None
+        assert len(forwarder.sent_messages) == 1
+        assert _extract_message_order_id(forwarder.sent_messages[0]) == 1
+        assert "no mapped forwarded ID" in caplog.text
+
+        orderbook = _RecordingOrderBook.last_instance
+        assert orderbook is not None
+        assert orderbook.added_order_ids == [701]
+        assert orderbook.cancelled_order_ids == []
+        assert orderbook.has_order(701)

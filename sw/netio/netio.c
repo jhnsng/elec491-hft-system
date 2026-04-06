@@ -11,6 +11,27 @@
 #include <sys/mman.h>
 #include <inttypes.h>
 #include <time.h>
+#include <signal.h>
+
+/* ============================================================
+ * Global counters for message types
+ * ============================================================ */
+
+static uint64_t count_adds = 0;
+static uint64_t count_cancels = 0;
+static uint64_t count_deletes = 0;
+static uint64_t count_executes = 0;
+static uint64_t count_replaces = 0;
+
+/* ============================================================
+ * Signal handler for SIGINT (Ctrl+C)
+ * ============================================================ */
+
+void sigint_handler(int sig) {
+    printf("Operations: adds=%" PRIu64 " cancels=%" PRIu64 " deletes=%" PRIu64 " executes=%" PRIu64 " replaces=%" PRIu64 "\n",
+           count_adds, count_cancels, count_deletes, count_executes, count_replaces);
+    exit(0);
+}
 
 /* ============================================================
  * Configuration
@@ -36,6 +57,8 @@ static const struct itch_msg_def itch_table[] = {
     { 'E', 31 },
     { 'X', 23 },
     { 'D', 19 },
+    { 'C', 36 },
+    { 'U', 35 },
 };
 
 static int get_itch_msg_length(uint8_t type)
@@ -80,6 +103,10 @@ static void fifo_write_update64(volatile uint32_t *fifo, uint64_t update)
  * ============================================================ */
 
 typedef uint64_t ob_update;
+typedef struct {
+    ob_update del_upd;
+    ob_update add_upd;
+} ob_replace_updates;
 
 extern ob_update order_add(uint64_t id,
                            uint32_t price,
@@ -89,6 +116,11 @@ extern ob_update order_add(uint64_t id,
 extern ob_update order_cancel_execute(uint64_t id,
                                       uint32_t qty);
 extern ob_update order_delete(uint64_t id);
+
+extern ob_replace_updates order_replace(uint64_t old_id,
+                                        uint64_t new_id,
+                                        uint32_t new_price,
+                                        uint32_t new_qty);
 
 /* ============================================================
  * UDP helpers
@@ -184,6 +216,9 @@ int main(void)
 
     FIFO_write_status_ptr = (unsigned int *)((char*)fifo + 0x20);
 
+    // Set up signal handler for SIGINT
+    signal(SIGINT, sigint_handler);
+
     printf("NetIO: listening for ITCH UDP on port %d\n", LISTEN_PORT);
 
     int warmup = 0;
@@ -216,7 +251,7 @@ int main(void)
 
         clock_gettime(CLOCK_MONOTONIC_RAW, &t_rx_end);
         total_received++;
-        printf("Packet %llu received, size=%zd\n", total_received, n);
+        //printf("Packet %llu received, size=%zd\n", total_received, n);
 
         if (n <= ITCH_PKT_HEADER) {
             printf("Packet too small, ignoring\n");
@@ -279,14 +314,20 @@ int main(void)
             }
 
             uint64_t order_id;
+            uint64_t old_id;
+            uint64_t new_id;
             uint32_t price;
             uint32_t quantity;
             uint8_t side;
             ob_update upd;
 
+            ob_replace_updates rep;
+            bool is_replace = false;
+
             switch (type) {
                 case 'A': // Add Order – No MPID Attribution
                 case 'F': { // Add Order with MPID Attribution
+                    count_adds++;
                     memcpy(&order_id, &msg[11], 8);
                     memcpy(&quantity, &msg[20], 4);
                     memcpy(&price, &msg[32], 4);
@@ -294,42 +335,74 @@ int main(void)
 
                     clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
 
-                    printf("order_add: id=0x%016" PRIx64 ", price=0x%" PRIx32
-                           ", qty=0x%" PRIx32 ", side=%c\n",
-                           order_id, price, quantity, side);
                     upd = order_add(order_id, price, quantity, side);
+
+                    //printf("order_add: id=0x%016" PRIx64 ", price=0x%" PRIx32
+                    //       ", qty=0x%" PRIx32 ", side=%c\n",
+                    //       order_id, price, quantity, side);
                     break;
                     }
-                case 'E': // Order Executed
+                case 'C': // Order Executed with Price
+                    count_executes++;
                     memcpy(&order_id, &msg[11], 8);
                     memcpy(&quantity, &msg[19], 4);
 
                     clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
 
                     upd = order_cancel_execute(order_id, quantity);
-                    printf("order_execute: id=0x%016" PRIx64 ", qty=0x%" PRIx32 "\n",
-                           order_id, quantity);
+                    //printf("order_execute_w_price: id=0x%016" PRIx64 ", qty=0x%" PRIx32 "\n",
+                    //       order_id, quantity);
+                    break;
+                case 'E': // Order Executed
+                    count_executes++;
+                    memcpy(&order_id, &msg[11], 8);
+                    memcpy(&quantity, &msg[19], 4);
+
+                    clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
+
+                    upd = order_cancel_execute(order_id, quantity);
+                    //printf("order_execute: id=0x%016" PRIx64 ", qty=0x%" PRIx32 "\n",
+                    //       order_id, quantity);
                     break;
 
                 case 'X': // Order Cancel
+                    count_cancels++;
                     memcpy(&order_id, &msg[11], 8);
                     memcpy(&quantity, &msg[19], 4);
                     
                     clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
 
                     upd = order_cancel_execute(order_id, quantity);
-                    printf("order_cancel: id=0x%016" PRIx64 ", qty=0x%" PRIx32 "\n",
-                          order_id, quantity);
+                    //printf("order_cancel: id=0x%016" PRIx64 ", qty=0x%" PRIx32 "\n",
+                    //      order_id, quantity);
                     break;
 
                 case 'D': // Order Delete
+                    count_deletes++;
                     memcpy(&order_id, &msg[11], 8);
 
                     clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
 
                     upd = order_delete(order_id);
-                    printf("order_delete: id=0x%016" PRIx64 "\n",
-                          order_id);
+                    //printf("order_delete: id=0x%016" PRIx64 "\n",
+                    //      order_id);
+                    break;
+
+                case 'U': // Order Replace
+                    count_replaces++;
+                    is_replace = true;
+
+                    memcpy(&old_id, &msg[11], 8);
+                    memcpy(&new_id, &msg[19], 8);
+                    memcpy(&quantity, &msg[27], 4);
+                    memcpy(&price, &msg[31], 4);
+
+                    clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_parse);
+
+                    rep = order_replace(old_id, new_id, price, quantity);
+                    //printf("order_replace: old_id=0x%016" PRIx64 ", new_id=0x%016" PRIx64
+                    //    ", new_qty=0x%" PRIx32 ", new_price=0x%" PRIx32 "\n",
+                    //    old_id, new_id, quantity, price);
                     break;
 
                 default:
@@ -341,13 +414,23 @@ int main(void)
 
             clock_gettime(CLOCK_MONOTONIC_RAW, &t_after_ordermap);
 
-            printf("ordermap output=0x%016" PRIx64 "\n", upd);
+            //printf("ordermap output=0x%016" PRIx64 "\n", upd);
 
             while (WRITE_FIFO_FILL_LEVEL >= (8192 - 64)) {
                 printf("FIFO full, waiting...\n");
             }
-
-            fifo_write_update64(fifo, upd);
+            if (is_replace) 
+            {
+                fifo_write_update64(fifo, rep.del_upd);
+                fifo_write_update64(fifo, rep.add_upd);
+                //printf("ordermap output del=0x%016" PRIx64 "\n", rep.del_upd);
+                //printf("ordermap output add=0x%016" PRIx64 "\n", rep.add_upd);
+            }
+            else 
+            {
+                fifo_write_update64(fifo, upd);
+                //printf("ordermap output=0x%016" PRIx64 "\n", upd);
+            }
 
             volatile uint32_t dummy = FIFO_write_status_ptr[0];
             (void)dummy;
@@ -361,6 +444,7 @@ int main(void)
             tot_latency_ordermap += timespec_to_ns(&t_after_ordermap) - timespec_to_ns(&t_after_parse);
             tot_latency_fifo     += timespec_to_ns(&t_after_fifo) - timespec_to_ns(&t_after_ordermap);
 
+            /*
             if (total_measured % AVG_INTERVAL == 0) {
                 printf("Latency avg over %d pkts: rx=%" PRIu64
                        " ns, parse=%" PRIu64
@@ -377,6 +461,7 @@ int main(void)
                 tot_latency_ordermap = 0;
                 tot_latency_fifo = 0;
             }
+                */
 
             cursor += total_len;
             remaining -= total_len;
