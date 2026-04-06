@@ -128,6 +128,13 @@ def _safe_symbol(symbol: bytes) -> str:
     return _safe_ascii(symbol.rstrip(b" \x00"))
 
 
+def _with_optional_hex(message: str, data: Optional[bytes]) -> str:
+    """Append full message hex only when verbose (DEBUG) logging is enabled."""
+    if data is None or not LOGGER.isEnabledFor(logging.DEBUG):
+        return message
+    return f"{message} HEX={_hex_dump(data)}"
+
+
 ###############################################################################
 # Message builders (outbound)
 ###############################################################################
@@ -352,11 +359,13 @@ class OUCHSession:
                     self._handle_cancel_order(data)
                 else:
                     LOGGER.warning(
-                        "Unknown OUCH message type %r from %s len=%d HEX=%s, ignoring",
+                        _with_optional_hex(
+                            "Unknown OUCH message type %r from %s len=%d, ignoring",
+                            data,
+                        ),
                         msg_type,
                         self._addr,
                         len(data),
-                        _hex_dump(data),
                     )
         except ConnectionError:
             LOGGER.info("OUCH client disconnected: %s", self._addr)
@@ -392,11 +401,13 @@ class OUCHSession:
             fields = parse_enter_order(data)
         except ValueError as exc:
             LOGGER.warning(
-                "Malformed Enter Order from %s: %s len=%d HEX=%s",
+                _with_optional_hex(
+                    "Malformed Enter Order from %s: %s len=%d",
+                    data,
+                ),
                 self._addr,
                 exc,
                 len(data),
-                _hex_dump(data),
             )
             return
 
@@ -411,13 +422,15 @@ class OUCHSession:
         symbol_str = _safe_symbol(symbol)
 
         LOGGER.info(
-            "OUCH EnterOrder RX: UserRefNum=%d Symbol=%s Side=%s Qty=%d Price=%.4f HEX=%s",
+            _with_optional_hex(
+                "OUCH EnterOrder RX: UserRefNum=%d Symbol=%s Side=%s Qty=%d Price=%.4f",
+                data,
+            ),
             user_ref_num,
             symbol_str,
             side_str,
             quantity,
             price / 10000.0,
-            _hex_dump(data),
         )
 
         paper_order = PaperOrder(
@@ -468,14 +481,17 @@ class OUCHSession:
             )
 
         LOGGER.info(
-            "OUCH Accepted: UserRefNum=%d Symbol=%s Side=%s Qty=%d "
-            "Price=%.4f OrderRefNum=%d HEX=%s",
+            _with_optional_hex(
+                "OUCH Accepted: UserRefNum=%d Symbol=%s Side=%s Qty=%d "
+                "Price=%.4f OrderRefNum=%d",
+                accepted_msg,
+            ),
             user_ref_num,
             symbol_str,
             side_str,
             quantity,
-            price / 10000.0, order_ref_num,
-            _hex_dump(accepted_msg),
+            price / 10000.0,
+            order_ref_num,
         )
 
         # Check for BBO cross (read-only orderbook access)
@@ -510,12 +526,17 @@ class OUCHSession:
                 )
 
             LOGGER.info(
-                "OUCH Executed: UserRefNum=%d Qty=%d ExecPrice=%.4f "
-                "MatchNum=%d (BBO: bid=%s ask=%s) HEX=%s",
-                user_ref_num, quantity, exec_price / 10000.0, match_number,
+                _with_optional_hex(
+                    "OUCH Executed: UserRefNum=%d Qty=%d ExecPrice=%.4f "
+                    "MatchNum=%d (BBO: bid=%s ask=%s)",
+                    executed_msg,
+                ),
+                user_ref_num,
+                quantity,
+                exec_price / 10000.0,
+                match_number,
                 f"${best_bid / 10000.0:.4f}" if best_bid else "None",
                 f"${best_ask / 10000.0:.4f}" if best_ask else "None",
-                _hex_dump(executed_msg),
             )
 
     def _handle_cancel_order(self, data: bytes) -> None:
@@ -524,21 +545,25 @@ class OUCHSession:
             fields = parse_cancel_order(data)
         except ValueError as exc:
             LOGGER.warning(
-                "Malformed Cancel Order from %s: %s len=%d HEX=%s",
+                _with_optional_hex(
+                    "Malformed Cancel Order from %s: %s len=%d",
+                    data,
+                ),
                 self._addr,
                 exc,
                 len(data),
-                _hex_dump(data),
             )
             return
 
         user_ref_num = fields["user_ref_num"]
         req_qty = fields["quantity"]
         LOGGER.info(
-            "OUCH CancelOrder RX: UserRefNum=%d ReqQty=%d HEX=%s",
+            _with_optional_hex(
+                "OUCH CancelOrder RX: UserRefNum=%d ReqQty=%d",
+                data,
+            ),
             user_ref_num,
             req_qty,
-            _hex_dump(data),
         )
         paper_order = self._paper_orders.get(user_ref_num)
 
@@ -570,11 +595,13 @@ class OUCHSession:
 
         symbol_str = _safe_symbol(paper_order.symbol)
         LOGGER.info(
-            "OUCH Canceled: UserRefNum=%d Symbol=%s CanceledQty=%d Reason=U HEX=%s",
+            _with_optional_hex(
+                "OUCH Canceled: UserRefNum=%d Symbol=%s CanceledQty=%d Reason=U",
+                canceled_msg,
+            ),
             user_ref_num,
             symbol_str,
             canceled_qty,
-            _hex_dump(canceled_msg),
         )
 
 
