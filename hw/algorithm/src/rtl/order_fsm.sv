@@ -199,7 +199,18 @@ module order_fsm (
 
   assign int_ready = !skid_valid;
 
+  // --- NEW: INVENTORY RISK TRACKING ---
+  logic signed [31:0] target_pos;
+  logic               pos_limit_exceeded;
+
   always_comb begin
+    // Check if fulfilling this order would exceed our +/- 100 share limit
+    pos_limit_exceeded = 1'b0;
+    if (i_head_valid) begin
+       if (i_head_reg.side == SIDE_BUY  && (target_pos >=  100)) pos_limit_exceeded = 1'b1;
+       if (i_head_reg.side == SIDE_SELL && (target_pos <= -100)) pos_limit_exceeded = 1'b1;
+    end
+
     i_pop         = 1'b0;
     iss_n         = iss; 
     pend_intent_n = pend_intent;
@@ -210,9 +221,16 @@ module order_fsm (
         pend_intent_n = i_head_reg;
       end
       if (!have_intent && i_head_valid && !out_full) begin
-        i_pop         = 1'b1;
-        have_intent_n = 1'b1;
-        iss_n         = ISS_REQTOK;
+        i_pop = 1'b1;
+        if (pos_limit_exceeded) begin
+            // SILENTLY DROP THE SIGNAL to protect inventory!
+            have_intent_n = 1'b0;
+            iss_n         = ISS_IDLE;
+        end else begin
+            // ACCEPT the signal
+            have_intent_n = 1'b1;
+            iss_n         = ISS_REQTOK;
+        end
       end
     end 
     else if (iss == ISS_REQTOK) begin
@@ -246,6 +264,7 @@ module order_fsm (
   // =========================================================================
   always_ff @(posedge clk) begin 
     if (!rst_n) begin
+      target_pos <= 32'd0;
       is_timeout_cancel_reg <= 1'b0;
       timeout_id_reg <= '0;
       for (int i=0; i<MAX_OUT; i++) age_cnt[i] <= '0;
@@ -397,6 +416,13 @@ module order_fsm (
           if (free_i == 4'd15) out_valid[15] <= 1'b1;
       end
 
+      // 1. ADD TO POSITION WHEN WE SEND AN ORDER
+      if (iss == ISS_IDLE && !have_intent && i_head_valid && !out_full && !pos_limit_exceeded) begin
+         if (i_head_reg.side == SIDE_BUY) target_pos <= target_pos + $signed(i_head_reg.qty);
+         else                             target_pos <= target_pos - $signed(i_head_reg.qty);
+      end
+
+      // 2. REVERT POSITION ON CANCELS / REJECTS
       if (rpt_valid_p1) begin
         for (int i = 0; i < MAX_OUT; i++) begin
           if (token_match_p1[i]) begin
@@ -404,8 +430,18 @@ module order_fsm (
               RPT_EXEC: begin
                 if (is_complete_fill_p1) out_valid[i] <= 1'b0;
               end
-              RPT_CANCELED: out_valid[i] <= 1'b0;
-              RPT_REJECT:   out_valid[i] <= 1'b0;
+              RPT_CANCELED: begin
+                out_valid[i] <= 1'b0;
+                // Safely revert the canceled quantity from our tracking!
+                if (match_data_p1.side == SIDE_BUY) target_pos <= target_pos - $signed(rpt_p1.filled_total);
+                else                                target_pos <= target_pos + $signed(rpt_p1.filled_total);
+              end
+              RPT_REJECT: begin
+                out_valid[i] <= 1'b0;
+                // Safely revert the rejected quantity!
+                if (match_data_p1.side == SIDE_BUY) target_pos <= target_pos - $signed(rpt_p1.filled_total);
+                else                                target_pos <= target_pos + $signed(rpt_p1.filled_total);
+              end
               default: ;
             endcase
           end
