@@ -604,14 +604,15 @@ hft_top_system The_System (
         .st_endofpacket   (fifo_ouch_ingress_out_eop),
         .st_empty         (fifo_ouch_ingress_out_empty),
 
-        // === OUTPUT TO ALGORITHM ===
+
+		// === OUTPUT TO ALGORITHM ===
         .algo_valid       (rpt_valid_w),
         .algo_msg_type    (rpt_kind_w),
-        .algo_order_ref   (rpt_token_id_w),
+        .algo_order_ref   (),                  // Unused by algorithm
         .algo_qty         (rpt_filled_total_w),
+        .algo_userref     (rpt_token_id_w),    // <--- Correctly wired to your token!
 
         // Unused fields
-        .algo_userref     (),
         .algo_timestamp   (),
         .algo_price       (),
         .algo_symbol      (),
