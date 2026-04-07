@@ -208,8 +208,8 @@ module order_fsm (
     // Check if fulfilling this order would exceed our +/- 100 share limit
     pos_limit_exceeded = 1'b0;
     if (i_head_valid) begin
-       if (i_head_reg.side == SIDE_BUY  && (target_pos >=  100)) pos_limit_exceeded = 1'b1;
-       if (i_head_reg.side == SIDE_SELL && (target_pos <= -100)) pos_limit_exceeded = 1'b1;
+       if (i_head_reg.side == SIDE_BUY  && (target_pos >=  1000)) pos_limit_exceeded = 1'b1;
+       if (i_head_reg.side == SIDE_SELL && (target_pos <= -1000)) pos_limit_exceeded = 1'b1;
     end
 
     i_pop         = 1'b0;
