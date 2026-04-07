@@ -19,7 +19,7 @@ reader:
 replay:
   enabled: true
   # start_timestamp: 34200000000000      # nanoseconds since midnight
-  # start_time_24h: "09:30:00.000000"    # market-day time, no timezone conversion
+  start_time_24h: "09:30:00.000000"    # market-day time, no timezone conversion
   speed: 1.0
 
 tickers:
@@ -34,7 +34,7 @@ ouch:
 
 orderbook:
   max_orders: 5000000
-  snapshot_interval_s: 10
+  snapshot_interval_s: 0.25
   snapshot_depth: 10
   snapshot_path: ./orderbook_snapshot.json
 
