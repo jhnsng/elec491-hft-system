@@ -9,7 +9,7 @@ package algo_cfg_pkg;
 
   // Basic risk knobs - SCALED DOWN FOR 2 DECIMAL PLACES (CENTS)
   //localparam logic [31:0] MAX_SPREAD_TICKS = 32'd5;  // $0.05 in 1e-2 units
-  localparam logic [31:0] MAX_SPREAD_TICKS = 32'd50;  // Increased from 5 to 50
+  localparam logic [31:0] MAX_SPREAD_TICKS = 32'd5;  
   localparam logic [31:0] DEFAULT_QTY      = 32'd100;
 
   // MACD Cross Threshold

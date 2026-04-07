@@ -84,6 +84,28 @@ module order_fsm (
   logic out_full;
   assign out_full = !has_free;
 
+
+  // --- NEW: CANCEL TIMEOUT LOGIC ---
+  localparam int CANCEL_TIMEOUT_CYCLES = 250_000; // 1 ms at 250MHz (tune to your liking)
+  logic [17:0] age_cnt [MAX_OUT];
+  logic        timeout_fire;
+  logic [3:0]  timeout_id;
+  logic        is_timeout_cancel_reg;
+  logic [3:0]  timeout_id_reg;
+
+  always_comb begin
+    timeout_fire = 1'b0;
+    timeout_id   = 4'd0;
+    for (int i = 0; i < MAX_OUT; i++) begin
+      // Find the first valid order that is older than the timeout and hasn't been canceled yet
+      if (out_valid[i] && (age_cnt[i] > CANCEL_TIMEOUT_CYCLES) && !out_tab[i].cancel_sent) begin
+         timeout_fire = 1'b1;
+         timeout_id   = i[3:0];
+         break; // Priority encoder to only pick one per cycle
+      end
+    end
+  end
+
   // Input FIFO
   localparam int FIFO_DEPTH = 16; // Increased to match MAX_OUT scale
   localparam int PTR_W      = $clog2(FIFO_DEPTH);
@@ -224,6 +246,10 @@ module order_fsm (
   // =========================================================================
   always_ff @(posedge clk) begin 
     if (!rst_n) begin
+      is_timeout_cancel_reg <= 1'b0;
+      timeout_id_reg <= '0;
+      for (int i=0; i<MAX_OUT; i++) age_cnt[i] <= '0;
+
       free_i <= 4'd0; has_free <= 1'b0;
       i_wr <= '0; i_rd <= '0;
       i_head_valid <= 1'b0; i_read_mem_reg <= 1'b0;
@@ -274,12 +300,36 @@ module order_fsm (
       is_partial_fill_p1  <= (rpt_s2.filled_total < matched_qty_s2);
       is_complete_fill_p1 <= (rpt_s2.filled_total >= matched_qty_s2);
 
-      do_enqueue_cancel_reg <= 1'b0;
+      /*do_enqueue_cancel_reg <= 1'b0;
       if (rpt_valid_p1 && has_match_p1 && (rpt_p1.kind == RPT_EXEC)) begin
         if (is_partial_fill_p1 && !match_data_p1.cancel_sent && !c_mem_full) begin
           do_enqueue_cancel_reg <= 1'b1;
         end
+      end*/
+
+      ///////
+
+      // NEW: Increment age of active orders
+      for (int i = 0; i < MAX_OUT; i++) begin
+          if (!out_valid[i]) age_cnt[i] <= '0;
+          else if (age_cnt[i] != 18'h3FFFF) age_cnt[i] <= age_cnt[i] + 1'b1;
       end
+
+      do_enqueue_cancel_reg <= 1'b0;
+      is_timeout_cancel_reg <= 1'b0;
+      timeout_id_reg <= timeout_id;
+
+      if (rpt_valid_p1 && has_match_p1 && (rpt_p1.kind == RPT_EXEC)) begin
+        if (is_partial_fill_p1 && !match_data_p1.cancel_sent && !c_mem_full) begin
+          do_enqueue_cancel_reg <= 1'b1;
+        end
+      end else if (timeout_fire && !c_mem_full) begin
+        // NEW: Trigger cancel from the timeout!
+        do_enqueue_cancel_reg <= 1'b1;
+        is_timeout_cancel_reg <= 1'b1;
+      end
+
+      ///////
 
       if (do_enqueue_cancel_reg) c_wr <= c_wr + 1'b1;
 
@@ -424,13 +474,29 @@ module order_fsm (
 
     match_data_p1 <= match_data_s2;
 
+    /*if (rpt_valid_p1 && has_match_p1 && (rpt_p1.kind == RPT_EXEC)) begin
+      cr_reg.symbol_id      <= match_data_p1.symbol_id;
+      cr_reg.token_id       <= match_data_p1.token_id;
+      cr_reg.side           <= match_data_p1.side;
+      cr_reg.price          <= match_data_p1.price;
+      cr_reg.intended_total <= rpt_p1.filled_total;
+    end*/
+
     if (rpt_valid_p1 && has_match_p1 && (rpt_p1.kind == RPT_EXEC)) begin
       cr_reg.symbol_id      <= match_data_p1.symbol_id;
       cr_reg.token_id       <= match_data_p1.token_id;
       cr_reg.side           <= match_data_p1.side;
       cr_reg.price          <= match_data_p1.price;
       cr_reg.intended_total <= rpt_p1.filled_total;
+    end else if (is_timeout_cancel_reg) begin
+      // NEW: Grab data from the timed-out slot!
+      cr_reg.symbol_id      <= out_tab[timeout_id_reg].symbol_id;
+      cr_reg.token_id       <= out_tab[timeout_id_reg].token_id;
+      cr_reg.side           <= out_tab[timeout_id_reg].side;
+      cr_reg.price          <= out_tab[timeout_id_reg].price;
+      cr_reg.intended_total <= out_tab[timeout_id_reg].filled_tot;
     end
+
     if (do_enqueue_cancel_reg) c_mem[c_wr[CPTR_W-1:0]] <= cr_reg;
     if (c_read_mem_reg) c_head_reg <= c_mem[c_rd[CPTR_W-1:0]];
 
@@ -490,6 +556,11 @@ module order_fsm (
           end
         end
       end
+    end
+
+    // NEW: Mark the timed-out order so we don't spam cancels for it
+    if (is_timeout_cancel_reg && do_enqueue_cancel_reg) begin
+      out_tab[timeout_id_reg].cancel_sent <= 1'b1;
     end
   end
 
