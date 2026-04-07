@@ -576,7 +576,7 @@ hft_top_system The_System (
 		.algo_cmd_type    (ord_action_w - 2'd1),        // Translates 1/2 to 0/1
 		.algo_qty         (ord_qty_w),
 		.algo_side        ({1'b0, ord_side_w}),         // Pads 1-bit to 2-bit
-		.algo_symbol      ({48'd0, ord_symbol_id_w}),   // Pads 16-bit to 64-bit
+		.algo_symbol      (64'h5350592020202020),   // Pads 16-bit to 64-bit
 		.algo_price_ticks ({32'd0, ord_price_int_w}),   // Pads 32-bit to 64-bit
 		.algo_orig_ref    (ord_token_id_w),
 
