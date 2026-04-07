@@ -86,8 +86,11 @@ module order_fsm (
 
 
   // --- NEW: CANCEL TIMEOUT LOGIC ---
-  localparam int CANCEL_TIMEOUT_CYCLES = 250_000; // 1 ms at 250MHz (tune to your liking)
-  logic [17:0] age_cnt [MAX_OUT];
+  //localparam int CANCEL_TIMEOUT_CYCLES = 250_000; // 1 ms at 250MHz (tune to your liking)
+  localparam int CANCEL_TIMEOUT_CYCLES = 250_000_000; 
+  //logic [17:0] age_cnt [MAX_OUT];
+  // Increased from [17:0] to [27:0] to hold numbers up to 268 million
+  logic [27:0] age_cnt [MAX_OUT];
   logic        timeout_fire;
   logic [3:0]  timeout_id;
   logic        is_timeout_cancel_reg;
@@ -96,14 +99,12 @@ module order_fsm (
   always_comb begin
     timeout_fire = 1'b0;
     timeout_id   = 4'd0;
-    for (int i = 0; i < MAX_OUT; i++) begin
-      // Find the first valid order that is older than the timeout and hasn't been canceled yet
-      if (out_valid[i] && (age_cnt[i] > CANCEL_TIMEOUT_CYCLES) && !out_tab[i].cancel_sent) begin
-         timeout_fire = 1'b1;
-         timeout_id   = i[3:0];
-         break; // Priority encoder to only pick one per cycle
+      // NEW: Increment age of active orders
+      for (int i = 0; i < MAX_OUT; i++) begin
+          if (!out_valid[i]) age_cnt[i] <= '0;
+          // Guard against 28-bit overflow (28'hFFFFFFF)
+          else if (age_cnt[i] != 28'hFFFFFFF) age_cnt[i] <= age_cnt[i] + 1'b1;
       end
-    end
   end
 
   // Input FIFO
