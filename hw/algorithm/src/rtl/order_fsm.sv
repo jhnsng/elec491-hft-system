@@ -97,25 +97,6 @@ module order_fsm (
   logic [3:0]  timeout_id_reg;
 
   // ==========================================
-  // 1. AGE COUNTERS (Requires a Clock)
-  // ==========================================
-  always_ff @(posedge clk) begin
-    if (!rst_n) begin
-      for (int i = 0; i < MAX_OUT; i++) begin
-        age_cnt[i] <= '0;
-      end
-    end else begin
-      for (int i = 0; i < MAX_OUT; i++) begin
-        if (!out_valid[i]) begin
-          age_cnt[i] <= '0; // Reset counter if slot is empty
-        end else if (age_cnt[i] != 28'hFFFFFFF) begin
-          age_cnt[i] <= age_cnt[i] + 1'b1; // Increment every clock cycle
-        end
-      end
-    end
-  end
-
-  // ==========================================
   // 2. TIMEOUT TRIGGER (Combinational is fine here)
   // ==========================================
   always_comb begin
