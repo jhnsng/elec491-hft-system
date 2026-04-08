@@ -100,17 +100,18 @@ module order_fsm (
   // 2. TIMEOUT TRIGGER (Combinational is fine here)
   // ==========================================
   always_comb begin
-    timeout_fire = 1'b0;
-    timeout_id   = 4'd0;
-    
-    // Check all slots to see if any reached the timeout
-    for (int i = 0; i < MAX_OUT; i++) begin
-      // FIX: Only trigger if we haven't already sent a cancel for this slot!
-      if (out_valid[i] && !out_tab[i].cancel_sent && (age_cnt[i] >= CANCEL_TIMEOUT_CYCLES)) begin
-        timeout_fire = 1'b1;
-        timeout_id   = i[3:0]; 
-        break; // Stop looking. We handle one cancel at a time!
-      end
+   timeout_fire = 1'b0;
+   timeout_id   = 4'd0;
+  
+   for (int i = 0; i < MAX_OUT; i++) begin
+      // FIX: Do not fire a timeout if a report is actively clearing this slot right now!
+     if (out_valid[i] && !out_tab[i].cancel_sent && (age_cnt[i] >= CANCEL_TIMEOUT_CYCLES)) begin
+        if (!(rpt_valid_p1 && token_match_p1[i])) begin 
+          timeout_fire = 1'b1;
+          timeout_id   = i[3:0]; 
+          break; 
+        end
+     end
     end
   end
 
