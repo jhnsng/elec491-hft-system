@@ -639,7 +639,7 @@ hft_top_system The_System (
     // Convert raw OUCH integers back to hft_types_pkg Enums
     always_comb begin
         rpt_valid_w        = 1'b0;
-        rpt_kind_w         = RPT_REJECT;
+        rpt_kind_w         = 2'b10; // RPT_REJECT (Default)
         rpt_token_id_w     = rpt_token_id_raw;
         rpt_filled_total_w = rpt_filled_total_raw;
 
