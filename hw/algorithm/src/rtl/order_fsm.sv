@@ -317,8 +317,8 @@ module order_fsm (
       token_match_s2 <= token_match_s1; has_match_s2 <= |token_match_s1;
       token_match_p1 <= token_match_s2; has_match_p1 <= has_match_s2;
 
-      is_partial_fill_p1  <= (rpt_s2.filled_total < matched_qty_s2);
-      is_complete_fill_p1 <= (rpt_s2.filled_total >= matched_qty_s2);
+      //is_partial_fill_p1  <= (rpt_s2.filled_total < matched_qty_s2);
+      //is_complete_fill_p1 <= (rpt_s2.filled_total >= matched_qty_s2);
 
       /*do_enqueue_cancel_reg <= 1'b0;
       if (rpt_valid_p1 && has_match_p1 && (rpt_p1.kind == RPT_EXEC)) begin
@@ -342,7 +342,8 @@ module order_fsm (
       end
 
       if (rpt_valid_p1 && has_match_p1 && (rpt_p1.kind == RPT_EXEC)) begin
-        if (is_partial_fill_p1 && !match_data_p1.cancel_sent && !c_mem_full) begin
+        // FIX: Use aligned p1 data directly!
+        if ((rpt_p1.filled_total < match_data_p1.qty) && !match_data_p1.cancel_sent && !c_mem_full) begin
           do_enqueue_cancel_reg <= 1'b1;
         end
       end else if (timeout_fire && !c_mem_full) begin
@@ -426,7 +427,8 @@ module order_fsm (
           if (token_match_p1[i]) begin
             unique case (rpt_p1.kind)
               RPT_EXEC: begin
-                if (is_complete_fill_p1) out_valid[i] <= 1'b0;
+                // FIX: Use the perfectly aligned p1 data!
+                if (rpt_p1.filled_total >= match_data_p1.qty) out_valid[i] <= 1'b0;
               end
               RPT_CANCELED, RPT_REJECT: begin
                 out_valid[i] <= 1'b0; // Just free the slot!
@@ -575,9 +577,12 @@ module order_fsm (
       for (int i = 0; i < MAX_OUT; i++) begin
         if (token_match_p1[i]) begin
           out_tab[i].filled_tot <= rpt_p1.filled_total;
-          if (rpt_p1.kind == RPT_EXEC && !is_complete_fill_p1 && !out_tab[i].cancel_sent) begin
+          
+          // FIX: Use aligned p1 data to determine if this was a partial fill!
+          if (rpt_p1.kind == RPT_EXEC && (rpt_p1.filled_total < match_data_p1.qty) && !out_tab[i].cancel_sent) begin
              out_tab[i].cancel_sent <= 1'b1;
           end
+          
         end
       end
     end
