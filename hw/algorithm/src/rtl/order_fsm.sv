@@ -578,10 +578,10 @@ module order_fsm (
         if (token_match_p1[i]) begin
           out_tab[i].filled_tot <= rpt_p1.filled_total;
           
-          // FIX: Use aligned p1 data to determine if this was a partial fill!
-          if (rpt_p1.kind == RPT_EXEC && (rpt_p1.filled_total < match_data_p1.qty) && !out_tab[i].cancel_sent) begin
-             out_tab[i].cancel_sent <= 1'b1;
-          end
+        // FIX: Use the perfectly aligned p1 data directly!
+        if (rpt_p1.kind == RPT_EXEC && (rpt_p1.filled_total < match_data_p1.qty) && !out_tab[i].cancel_sent && !c_mem_full) begin
+            out_tab[i].cancel_sent <= 1'b1;
+        end
           
         end
       end

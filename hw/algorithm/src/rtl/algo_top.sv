@@ -46,7 +46,7 @@ module algo_top (
   // ----------------------------------------------------------------
   // Token request metadata FIFO 
   // ----------------------------------------------------------------
-  localparam int META_DEPTH = 4;
+  localparam int META_DEPTH = 32;
   localparam int META_PTR_W = $clog2(META_DEPTH);
 
   typedef struct packed {
