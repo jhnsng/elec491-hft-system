@@ -82,7 +82,7 @@ module order_fsm (
   end
 
   
-  // TIMEOUT LOGIC - ADD THIS
+  // TIMEOUT LOGIC
   localparam int CANCEL_TIMEOUT_CYCLES = 19_000_000;  // ~138ms @138MHz
   logic [24:0] age_cnt [MAX_OUT];  // 25 bits = 33M cycles max
   logic        timeout_fire;
@@ -91,7 +91,7 @@ module order_fsm (
   logic out_full;
   assign out_full = !has_free;
 
-  // TIMEOUT DETECTOR - ADD THIS
+  // TIMEOUT DETECTOR
   always_comb begin
     timeout_fire = 1'b0;
     timeout_id   = 4'd0;
@@ -105,6 +105,36 @@ module order_fsm (
       end
     end
   end
+
+  localparam int FULL_STUCK_CYCLES = 25_000_000;
+  logic [24:0] full_stuck_cnt;
+  logic        force_recover;
+  logic [3:0]  force_recover_id;
+
+always_ff @(posedge clk) begin
+  if (!rst_n) begin
+    full_stuck_cnt <= '0; 
+  end else begin
+    if (!out_full || |token_match_p1 || do_enqueue_cancel_reg)  // Reset on ANY progress
+      full_stuck_cnt <= '0;
+    else if (full_stuck_cnt < FULL_STUCK_CYCLES)
+      full_stuck_cnt <= full_stuck_cnt + 1'b1;
+  end
+end
+
+assign force_recover = (full_stuck_cnt >= FULL_STUCK_CYCLES);
+
+always_comb begin
+  force_recover_id = 4'd0;
+  for (int i = 0; i < MAX_OUT; i++) begin
+    if (out_valid[i]) begin
+      force_recover_id = i[3:0];
+      break;
+    end
+  end
+end
+
+
 
   // Input FIFO
   localparam int FIFO_DEPTH = 16; // Increased to match MAX_OUT scale
@@ -306,14 +336,15 @@ module order_fsm (
       is_partial_fill_p1  <= (rpt_s2.filled_total < matched_qty_s2);
       is_complete_fill_p1 <= (rpt_s2.filled_total >= matched_qty_s2);
 
-      // MODIFY EXISTING: Replace your do_enqueue_cancel_reg block
+      // MODIFIED
       do_enqueue_cancel_reg <= 1'b0;
+
       if (rpt_valid_p1 && has_match_p1 && (rpt_p1.kind == RPT_EXEC)) begin
-        if (is_partial_fill_p1 && !match_data_p1.cancel_sent && !c_mem_full) begin
+        if (is_partial_fill_p1 && !match_data_p1.cancel_sent && !c_mem_full) do_enqueue_cancel_reg <= 1'b1;
+      end else if (timeout_fire && !c_mem_full) begin
           do_enqueue_cancel_reg <= 1'b1;
-        end
-      end else if (timeout_fire && !c_mem_full) begin  // ADD TIMEOUT TRIGGER
-        do_enqueue_cancel_reg <= 1'b1;
+      end else if (force_recover && !c_mem_full) begin
+          do_enqueue_cancel_reg <= 1'b1;
       end
 
       if (do_enqueue_cancel_reg) c_wr <= c_wr + 1'b1;
@@ -471,6 +502,13 @@ module order_fsm (
       cr_reg.side           <= out_tab[timeout_id].side;
       cr_reg.price          <= out_tab[timeout_id].price;
       cr_reg.intended_total <= out_tab[timeout_id].qty;  // Full cancel
+    end
+    else if (force_recover && !c_mem_full) begin
+      cr_reg.symbol_id      <= out_tab[force_recover_id].symbol_id;
+      cr_reg.token_id       <= out_tab[force_recover_id].token_id;
+      cr_reg.side           <= out_tab[force_recover_id].side;
+      cr_reg.price          <= out_tab[force_recover_id].price;
+      cr_reg.intended_total <= out_tab[force_recover_id].qty;  // Full cancel
     end
     if (do_enqueue_cancel_reg) c_mem[c_wr[CPTR_W-1:0]] <= cr_reg;
     if (c_read_mem_reg) c_head_reg <= c_mem[c_rd[CPTR_W-1:0]];
