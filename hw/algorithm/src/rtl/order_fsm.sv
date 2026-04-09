@@ -93,24 +93,23 @@ module order_fsm (
   logic out_full;
   assign out_full = !has_free;
 
-logic [3:0] irk;  // 4 bits is enough for MAX_OUT = 16
-logic [3:0] k;    // declare loop counter outside
-
 always_comb begin
-    timeout_fire = 1'b0;
-    timeout_id   = 4'd0;
+  timeout_fire = 1'b0;
+  timeout_id   = 4'd0;
 
-    for (k = 0; k < MAX_OUT; k = k + 1) begin
-        irk = timeout_scan_ptr + k;
-        if (irk >= MAX_OUT) irk = irk - MAX_OUT;  // emulate modulo
+  for (int k = 0; k < MAX_OUT; k++) begin
+    int idx;
+    idx = timeout_scan_ptr + k;
+    if (idx >= MAX_OUT) idx = idx - MAX_OUT;
 
-        if (out_valid[irk] && !out_tab[irk].cancel_sent &&
-            (age_cnt[irk] >= CANCEL_TIMEOUT_CYCLES)) begin
-            timeout_fire = 1'b1;
-            timeout_id   = irk;
-            break;
-        end
+    if (!timeout_fire &&
+        out_valid[idx] &&
+        !out_tab[idx].cancel_sent &&
+        (age_cnt[idx] >= CANCEL_TIMEOUT_CYCLES[24:0])) begin
+      timeout_fire = 1'b1;
+      timeout_id   = idx[3:0];
     end
+  end
 end
 
   localparam int FULL_STUCK_CYCLES = 10_000_000;
