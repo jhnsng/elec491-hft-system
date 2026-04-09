@@ -15,9 +15,9 @@ module feature_pipe (
   input  logic [31:0] max_spread,
   input  logic signed [63:0] cross_thresh,
 
-  output logic                 pipe_ready,
-  output logic                 sig_valid,
-  output logic                 sig_enter,
+  output logic                pipe_ready,
+  output logic                sig_valid,
+  output logic                sig_enter,
   output hft_types_pkg::side_e sig_side,
   output logic [31:0]          sig_price_int,
   output logic [31:0]          sig_qty,
@@ -105,10 +105,29 @@ module feature_pipe (
   logic [2:0] busy_cnt;
   logic [15:0] sample_cnt;
   logic        ema_ready;
+
+  // ----------------------------------------------------------------
+  // Book Readiness Gate & Hardware Throttling
+  // ----------------------------------------------------------------
+  logic [31:0] last_sampled_bb_p, last_sampled_ba_p;
+  logic        price_changed;
+
+  always_ff @(posedge clk) begin 
+    if (!rst_n) begin
+      last_sampled_bb_p <= 32'd0;
+      last_sampled_ba_p <= 32'd0;
+    end else if (valid_snap) begin
+      last_sampled_bb_p <= bb_p_prep;
+      last_sampled_ba_p <= ba_p_prep;
+    end
+  end
+
+  // Only trigger the EMA pipeline if the price physically moved!
+  assign price_changed = (bb_p_prep != last_sampled_bb_p) || (ba_p_prep != last_sampled_ba_p);
   
-  // Notice we now use the 1-bit PREP signals. Fan-in is tiny!
+  // Notice we now use the 1-bit PREP signals AND the price_changed detector
   assign pipe_ready = (busy_cnt == 0);
-  assign valid_snap = snap_en_prep && book_ready_prep && pipe_ready;
+  assign valid_snap = snap_en_prep && book_ready_prep && pipe_ready && price_changed;
 
   always_ff @(posedge clk) begin 
     if (!rst_n) begin
@@ -174,24 +193,27 @@ module feature_pipe (
       en_d17 <= en_d16; rdy_d17 <= rdy_d16;
     end
 
-    // Input to shift register is now PREP!
-    ba_p_d1 <= ba_p_prep; bb_p_d1 <= bb_p_prep; mid_d1 <= mid_prep; spr_d1 <= spread_prep; 
-    ba_p_d2 <= ba_p_d1; bb_p_d2 <= bb_p_d1; mid_d2 <= mid_d1; spr_d2 <= spr_d1;
-    ba_p_d3 <= ba_p_d2; bb_p_d3 <= bb_p_d2; mid_d3 <= mid_d2; spr_d3 <= spr_d2;
-    ba_p_d4 <= ba_p_d3; bb_p_d4 <= bb_p_d3; mid_d4 <= mid_d3; spr_d4 <= spr_d3;
-    ba_p_d5 <= ba_p_d4; bb_p_d5 <= bb_p_d4; mid_d5 <= mid_d4; spr_d5 <= spr_d4;
-    ba_p_d6 <= ba_p_d5; bb_p_d6 <= bb_p_d5; mid_d6 <= mid_d5; spr_d6 <= spr_d5;
-    ba_p_d7 <= ba_p_d6; bb_p_d7 <= bb_p_d6; mid_d7 <= mid_d6; spr_d7 <= spr_d6;
-    ba_p_d8 <= ba_p_d7; bb_p_d8 <= bb_p_d7; mid_d8 <= mid_d7; spr_d8 <= spr_d7;
-    ba_p_d9 <= ba_p_d8; bb_p_d9 <= bb_p_d8; mid_d9 <= mid_d8; spr_d9 <= spr_d8;
-    ba_p_d10 <= ba_p_d9; bb_p_d10 <= bb_p_d9; mid_d10 <= mid_d9; spr_d10 <= spr_d9;
-    ba_p_d11 <= ba_p_d10; bb_p_d11 <= bb_p_d10; mid_d11 <= mid_d10; spr_d11 <= spr_d10;
-    ba_p_d12 <= ba_p_d11; bb_p_d12 <= bb_p_d11; mid_d12 <= mid_d11; spr_d12 <= spr_d11;
-    ba_p_d13 <= ba_p_d12; bb_p_d13 <= bb_p_d12; mid_d13 <= mid_d12; spr_d13 <= spr_d12;
-    ba_p_d14 <= ba_p_d13; bb_p_d14 <= bb_p_d13; mid_d14 <= mid_d13; spr_d14 <= spr_d13;
-    ba_p_d15 <= ba_p_d14; bb_p_d15 <= bb_p_d14; mid_d15 <= mid_d14; spr_d15 <= spr_d14;
-    ba_p_d16 <= ba_p_d15; bb_p_d16 <= bb_p_d15; mid_d16 <= mid_d15; spr_d16 <= spr_d15;
-    ba_p_d17 <= ba_p_d16; bb_p_d17 <= bb_p_d16; mid_d17 <= mid_d16; spr_d17 <= spr_d16;
+    // FIX: Only shift the price data when the pipeline actually evaluates a snap!
+    if (valid_snap) begin
+      ba_p_d1 <= ba_p_prep; bb_p_d1 <= bb_p_prep; mid_d1 <= mid_prep; spr_d1 <= spread_prep; 
+    end
+    
+    if (en_d1) begin ba_p_d2 <= ba_p_d1; bb_p_d2 <= bb_p_d1; mid_d2 <= mid_d1; spr_d2 <= spr_d1; end
+    if (en_d2) begin ba_p_d3 <= ba_p_d2; bb_p_d3 <= bb_p_d2; mid_d3 <= mid_d2; spr_d3 <= spr_d2; end
+    if (en_d3) begin ba_p_d4 <= ba_p_d3; bb_p_d4 <= bb_p_d3; mid_d4 <= mid_d3; spr_d4 <= spr_d3; end
+    if (en_d4) begin ba_p_d5 <= ba_p_d4; bb_p_d5 <= bb_p_d4; mid_d5 <= mid_d4; spr_d5 <= spr_d4; end
+    if (en_d5) begin ba_p_d6 <= ba_p_d5; bb_p_d6 <= bb_p_d5; mid_d6 <= mid_d5; spr_d6 <= spr_d5; end
+    if (en_d6) begin ba_p_d7 <= ba_p_d6; bb_p_d7 <= bb_p_d6; mid_d7 <= mid_d6; spr_d7 <= spr_d6; end
+    if (en_d7) begin ba_p_d8 <= ba_p_d7; bb_p_d8 <= bb_p_d7; mid_d8 <= mid_d7; spr_d8 <= spr_d7; end
+    if (en_d8) begin ba_p_d9 <= ba_p_d8; bb_p_d9 <= bb_p_d8; mid_d9 <= mid_d8; spr_d9 <= spr_d8; end
+    if (en_d9) begin ba_p_d10 <= ba_p_d9; bb_p_d10 <= bb_p_d9; mid_d10 <= mid_d9; spr_d10 <= spr_d9; end
+    if (en_d10) begin ba_p_d11 <= ba_p_d10; bb_p_d11 <= bb_p_d10; mid_d11 <= mid_d10; spr_d11 <= spr_d10; end
+    if (en_d11) begin ba_p_d12 <= ba_p_d11; bb_p_d12 <= bb_p_d11; mid_d12 <= mid_d11; spr_d12 <= spr_d11; end
+    if (en_d12) begin ba_p_d13 <= ba_p_d12; bb_p_d13 <= bb_p_d12; mid_d13 <= mid_d12; spr_d13 <= spr_d12; end
+    if (en_d13) begin ba_p_d14 <= ba_p_d13; bb_p_d14 <= bb_p_d13; mid_d14 <= mid_d13; spr_d14 <= spr_d13; end
+    if (en_d14) begin ba_p_d15 <= ba_p_d14; bb_p_d15 <= bb_p_d14; mid_d15 <= mid_d14; spr_d15 <= spr_d14; end
+    if (en_d15) begin ba_p_d16 <= ba_p_d15; bb_p_d16 <= bb_p_d15; mid_d16 <= mid_d15; spr_d16 <= spr_d15; end
+    if (en_d16) begin ba_p_d17 <= ba_p_d16; bb_p_d17 <= bb_p_d16; mid_d17 <= mid_d16; spr_d17 <= spr_d16; end
 
     if (en_d7) macd_reg_d8 <= ema_fast - ema_slow;
 
