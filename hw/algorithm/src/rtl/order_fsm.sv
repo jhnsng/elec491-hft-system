@@ -81,37 +81,28 @@ module order_fsm (
     else if (!out_valid[15]) begin free_i_next = 4'd15; has_free_next = 1'b1; end
   end
 
+  
+  // TIMEOUT LOGIC - ADD THIS
+  localparam int CANCEL_TIMEOUT_CYCLES = 19_000_000;  // ~138ms @138MHz
+  logic [24:0] age_cnt [MAX_OUT];  // 25 bits = 33M cycles max
+  logic        timeout_fire;
+  logic [3:0]  timeout_id;
+
   logic out_full;
   assign out_full = !has_free;
 
-
-  // --- NEW: CANCEL TIMEOUT LOGIC ---
-  //localparam int CANCEL_TIMEOUT_CYCLES = 250_000; // 1 ms at 250MHz (tune to your liking)
-  localparam int CANCEL_TIMEOUT_CYCLES = 250_000_000; 
-  //logic [17:0] age_cnt [MAX_OUT];
-  // Increased from [17:0] to [27:0] to hold numbers up to 268 million
-  logic [27:0] age_cnt [MAX_OUT];
-  logic        timeout_fire;
-  logic [3:0]  timeout_id;
-  logic        is_timeout_cancel_reg;
-  logic [3:0]  timeout_id_reg;
-
-  // ==========================================
-  // 2. TIMEOUT TRIGGER (Combinational is fine here)
-  // ==========================================
+  // TIMEOUT DETECTOR - ADD THIS
   always_comb begin
-   timeout_fire = 1'b0;
-   timeout_id   = 4'd0;
+    timeout_fire = 1'b0;
+    timeout_id   = 4'd0;
   
-   for (int i = 0; i < MAX_OUT; i++) begin
-      // FIX: Do not fire a timeout if a report is actively clearing this slot right now!
-     if (out_valid[i] && !out_tab[i].cancel_sent && (age_cnt[i] >= CANCEL_TIMEOUT_CYCLES)) begin
-        if (!(rpt_valid_p1 && token_match_p1[i])) begin 
+    for (int i = 0; i < MAX_OUT; i++) begin
+      if (out_valid[i] && !out_tab[i].cancel_sent && 
+         (age_cnt[i] >= CANCEL_TIMEOUT_CYCLES)) begin
           timeout_fire = 1'b1;
-          timeout_id   = i[3:0]; 
-          break; 
-        end
-     end
+          timeout_id   = i[3:0];
+          break;
+      end
     end
   end
 
@@ -208,18 +199,7 @@ module order_fsm (
 
   assign int_ready = !skid_valid;
 
-  // --- NEW: INVENTORY RISK TRACKING ---
-  //logic signed [31:0] target_pos;
-  //logic               pos_limit_exceeded;
-
   always_comb begin
-    // Check if fulfilling this order would exceed our +/- 100 share limit
-    //pos_limit_exceeded = 1'b0;
-    //if (i_head_valid) begin
-    //   if (i_head_reg.side == SIDE_BUY  && (target_pos >=  1000)) pos_limit_exceeded = 1'b1;
-    //   if (i_head_reg.side == SIDE_SELL && (target_pos <= -1000)) pos_limit_exceeded = 1'b1;
-    //end
-
     i_pop         = 1'b0;
     iss_n         = iss; 
     pend_intent_n = pend_intent;
@@ -230,7 +210,7 @@ module order_fsm (
         pend_intent_n = i_head_reg;
       end
       if (!have_intent && i_head_valid && !out_full) begin
-        i_pop = 1'b1;
+        i_pop         = 1'b1;
         have_intent_n = 1'b1;
         iss_n         = ISS_REQTOK;
       end
@@ -266,11 +246,7 @@ module order_fsm (
   // =========================================================================
   always_ff @(posedge clk) begin 
     if (!rst_n) begin
-      //target_pos <= 32'd0;
-      is_timeout_cancel_reg <= 1'b0;
-      timeout_id_reg <= '0;
-      for (int i=0; i<MAX_OUT; i++) age_cnt[i] <= '0;
-
+      for (int i = 0; i < MAX_OUT; i++) age_cnt[i] <= 25'd0;
       free_i <= 4'd0; has_free <= 1'b0;
       i_wr <= '0; i_rd <= '0;
       i_head_valid <= 1'b0; i_read_mem_reg <= 1'b0;
@@ -309,6 +285,15 @@ module order_fsm (
         i_head_valid <= 1'b0;
       end
 
+      // AGE COUNTERS - ADD THIS (before do_enqueue_cancel_reg)
+    for (int i = 0; i < MAX_OUT; i++) begin
+      if (!out_valid[i]) begin
+        age_cnt[i] <= 25'd0;  // Reset when slot frees
+      end else if (age_cnt[i] < 25'h1F_FFFFF) begin
+        age_cnt[i] <= age_cnt[i] + 1'b1;  // Count up
+      end
+    end
+
       // DELAY PIPELINE: Giving out_tab 1 full cycle to settle!
       rpt_valid_s0 <= rpt_valid;
       rpt_valid_s1 <= rpt_valid_s0;
@@ -318,41 +303,18 @@ module order_fsm (
       token_match_s2 <= token_match_s1; has_match_s2 <= |token_match_s1;
       token_match_p1 <= token_match_s2; has_match_p1 <= has_match_s2;
 
-      //is_partial_fill_p1  <= (rpt_s2.filled_total < matched_qty_s2);
-      //is_complete_fill_p1 <= (rpt_s2.filled_total >= matched_qty_s2);
+      is_partial_fill_p1  <= (rpt_s2.filled_total < matched_qty_s2);
+      is_complete_fill_p1 <= (rpt_s2.filled_total >= matched_qty_s2);
 
-      /*do_enqueue_cancel_reg <= 1'b0;
+      // MODIFY EXISTING: Replace your do_enqueue_cancel_reg block
+      do_enqueue_cancel_reg <= 1'b0;
       if (rpt_valid_p1 && has_match_p1 && (rpt_p1.kind == RPT_EXEC)) begin
         if (is_partial_fill_p1 && !match_data_p1.cancel_sent && !c_mem_full) begin
           do_enqueue_cancel_reg <= 1'b1;
         end
-      end*/
-
-      ///////
-
-      // NEW: Increment age of active orders
-      for (int i = 0; i < MAX_OUT; i++) begin
-          if (!out_valid[i]) age_cnt[i] <= '0;
-          else if (age_cnt[i] != 28'hFFFFFFF) age_cnt[i] <= age_cnt[i] + 1'b1; // FIXED
+      end else if (timeout_fire && !c_mem_full) begin  // ADD TIMEOUT TRIGGER
+        do_enqueue_cancel_reg <= 1'b1;
       end
-
-      do_enqueue_cancel_reg <= 1'b0;
-      is_timeout_cancel_reg <= 1'b0;
-      if (timeout_fire && !c_mem_full) begin
-        timeout_id_reg <= timeout_id;
-      end
-
-if (rpt_valid_p1 && has_match_p1 && (rpt_p1.kind == RPT_EXEC)) begin
-  if ((rpt_p1.filled_total < match_data_p1.qty) && 
-      !match_data_p1.cancel_sent && !c_mem_full) begin
-    do_enqueue_cancel_reg <= 1'b1;
-  end
-end else if (timeout_fire && !c_mem_full) begin
-  do_enqueue_cancel_reg <= 1'b1;
-  is_timeout_cancel_reg <= 1'b1;
-end
-
-      ///////
 
       if (do_enqueue_cancel_reg) c_wr <= c_wr + 1'b1;
 
@@ -420,27 +382,20 @@ end
           if (free_i == 4'd15) out_valid[15] <= 1'b1;
       end
 
-
-if (rpt_valid_p1) begin
-  for (int i = 0; i < MAX_OUT; i++) begin
-    if (token_match_p1[i]) begin
-      unique case (rpt_p1.kind)
-        RPT_EXEC: begin
-          out_tab[i].filled_tot <= rpt_p1.filled_total;
-          if (rpt_p1.filled_total >= match_data_p1.qty) begin
-            out_valid[i] <= 1'b0;  // FREE SLOT ON FULL FILL
+      if (rpt_valid_p1) begin
+        for (int i = 0; i < MAX_OUT; i++) begin
+          if (token_match_p1[i]) begin
+            unique case (rpt_p1.kind)
+              RPT_EXEC: begin
+                if (is_complete_fill_p1) out_valid[i] <= 1'b0;
+              end
+              RPT_CANCELED: out_valid[i] <= 1'b0;
+              RPT_REJECT:   out_valid[i] <= 1'b0;
+              default: ;
+            endcase
           end
         end
-        
-        RPT_CANCELED, RPT_REJECT: begin
-          out_valid[i] <= 1'b0;  // FREE SLOT ON CANCEL/REJECT
-        end
-        
-        default: ;
-      endcase
-    end
-  end
-end
+      end
     end
   end
 
@@ -504,28 +459,19 @@ end
 
     match_data_p1 <= match_data_s2;
 
-    /*if (rpt_valid_p1 && has_match_p1 && (rpt_p1.kind == RPT_EXEC)) begin
-      cr_reg.symbol_id      <= match_data_p1.symbol_id;
-      cr_reg.token_id       <= match_data_p1.token_id;
-      cr_reg.side           <= match_data_p1.side;
-      cr_reg.price          <= match_data_p1.price;
-      cr_reg.intended_total <= rpt_p1.filled_total;
-    end*/
-
     if (rpt_valid_p1 && has_match_p1 && (rpt_p1.kind == RPT_EXEC)) begin
       cr_reg.symbol_id      <= match_data_p1.symbol_id;
       cr_reg.token_id       <= match_data_p1.token_id;
       cr_reg.side           <= match_data_p1.side;
       cr_reg.price          <= match_data_p1.price;
-      cr_reg.intended_total <= match_data_p1.qty; 
-    end else if (timeout_fire && !c_mem_full) begin  // FIX: Use immediate comb trigger
+      cr_reg.intended_total <= rpt_p1.filled_total;
+    end else if (timeout_fire && !c_mem_full) begin
       cr_reg.symbol_id      <= out_tab[timeout_id].symbol_id;
       cr_reg.token_id       <= out_tab[timeout_id].token_id;
       cr_reg.side           <= out_tab[timeout_id].side;
       cr_reg.price          <= out_tab[timeout_id].price;
-      cr_reg.intended_total <= out_tab[timeout_id].qty; 
+      cr_reg.intended_total <= out_tab[timeout_id].qty;  // Full cancel
     end
-
     if (do_enqueue_cancel_reg) c_mem[c_wr[CPTR_W-1:0]] <= cr_reg;
     if (c_read_mem_reg) c_head_reg <= c_mem[c_rd[CPTR_W-1:0]];
 
@@ -576,25 +522,21 @@ end
     if (load_slot_14) begin out_tab[14].symbol_id <= pend_intent.symbol_id; out_tab[14].token_id <= pend_token; safe_token_id[14] <= pend_token; out_tab[14].side <= pend_intent.side; out_tab[14].price <= pend_intent.price; out_tab[14].qty <= pend_intent.qty; out_tab[14].filled_tot <= 32'd0; out_tab[14].cancel_sent <= 1'b0; end
     if (load_slot_15) begin out_tab[15].symbol_id <= pend_intent.symbol_id; out_tab[15].token_id <= pend_token; safe_token_id[15] <= pend_token; out_tab[15].side <= pend_intent.side; out_tab[15].price <= pend_intent.price; out_tab[15].qty <= pend_intent.qty; out_tab[15].filled_tot <= 32'd0; out_tab[15].cancel_sent <= 1'b0; end
 
-if (rpt_valid_p1) begin
-  for (int i = 0; i < MAX_OUT; i++) begin
-    if (token_match_p1[i]) begin
-      out_tab[i].filled_tot <= rpt_p1.filled_total;
-      
-      // Mark partial fills for cancel (don't double-cancel)
-      if (rpt_p1.kind == RPT_EXEC && 
-          (rpt_p1.filled_total < match_data_p1.qty) && 
-          !out_tab[i].cancel_sent && !c_mem_full) begin
-        out_tab[i].cancel_sent <= 1'b1;
+    if (rpt_valid_p1) begin
+      for (int i = 0; i < MAX_OUT; i++) begin
+        if (token_match_p1[i]) begin
+          out_tab[i].filled_tot <= rpt_p1.filled_total;
+          if (rpt_p1.kind == RPT_EXEC && !is_complete_fill_p1 && !out_tab[i].cancel_sent) begin
+             out_tab[i].cancel_sent <= 1'b1;
+          end
+        end
       end
     end
-  end
-end
 
-    // NEW: Mark the timed-out order so we don't spam cancels for it
-    if (timeout_fire && !c_mem_full) begin // FIX: Use immediate comb trigger
-      out_tab[timeout_id].cancel_sent <= 1'b1;
-    end
+    // ADD THIS at very end of BLOCK 2 always_ff
+if (timeout_fire && !c_mem_full) begin
+  out_tab[timeout_id].cancel_sent <= 1'b1;  // Prevent double-cancel
+end
   end
 
 endmodule

@@ -58,15 +58,15 @@ module algorithm (
   assign link.l1.ba_q      = ba_q;
   assign l1_ready = link.l1_ready;
 
-  // =========================================================
-  // Token ports are now disconnected from the link! 
-  // The algorithm generates its own tokens internally.
-  // We tie off the external ports to satisfy top-level wiring.
-  // =========================================================
-  assign tok_req_valid     = 1'b0;
-  assign tok_req_symbol_id = 16'd0;
-  assign tok_req_strat_id  = 16'd0;
-  assign tok_resp_ready    = 1'b1;
+  assign tok_req_valid = link.tok_req_valid;
+  assign tok_req_symbol_id = link.tok_req.symbol_id;
+  assign tok_req_strat_id = link.tok_req.strat_id;
+  assign link.tok_req_ready = tok_req_ready;
+
+  assign link.tok_resp_valid    = tok_resp_valid;
+  assign link.tok_resp.symbol_id = tok_resp_symbol_id;
+  assign link.tok_resp.token_id  = tok_resp_token_id;
+  assign tok_resp_ready = link.tok_resp_ready;
 
   assign ord_valid = link.ord_valid;
   assign ord_symbol_id = link.ord.symbol_id;

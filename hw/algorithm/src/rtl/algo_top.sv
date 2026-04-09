@@ -18,35 +18,9 @@ module algo_top (
   end
 
   // ----------------------------------------------------------------
-  // Internal Token Allocator
-  // ----------------------------------------------------------------
-  logic        internal_tok_req_valid;
-  logic        internal_tok_req_ready;
-  logic        internal_tok_resp_valid;
-  logic [31:0] internal_tok_resp_id;
-  logic [31:0] next_token;
-
-  assign internal_tok_req_ready = 1'b1; // Always ready to give a token
-
-  always_ff @(posedge link.clk) begin
-      if (!rst_n_reg) begin
-          next_token <= 32'd1;  // Start at Token #1
-          internal_tok_resp_valid <= 1'b0;
-      end else begin
-          internal_tok_resp_valid <= 1'b0; // Default pulse
-          
-          if (internal_tok_req_valid && internal_tok_req_ready) begin
-              internal_tok_resp_valid <= 1'b1;
-              internal_tok_resp_id    <= next_token;
-              next_token              <= next_token + 32'd1; 
-          end
-      end
-  end
-
-  // ----------------------------------------------------------------
   // Token request metadata FIFO 
   // ----------------------------------------------------------------
-  localparam int META_DEPTH = 32;
+  localparam int META_DEPTH = 4;
   localparam int META_PTR_W = $clog2(META_DEPTH);
 
   typedef struct packed {
@@ -152,8 +126,8 @@ module algo_top (
   end
 
   logic meta_deq;
-  // Drain the FIFO using the internal token allocator signals!
-  assign meta_deq = internal_tok_req_valid && internal_tok_req_ready;
+  // Intercepted tok_req_ready!
+  assign meta_deq = link.tok_req_valid && tok_req_ready_reg;
 
   logic meta_can_enq_pre;
   assign meta_can_enq_pre = !meta_full;
@@ -204,9 +178,6 @@ module algo_top (
     end
   end
 
-  // =================================================================
-  // Order FSM Instantiation
-  // =================================================================
   order_fsm u_fsm (
     .clk(link.clk),
     .rst_n(rst_n_reg),   // Intercepted Reset
@@ -217,12 +188,12 @@ module algo_top (
     .sig_price(sig_price_int_reg),
     .sig_qty(sig_qty_reg),
 
-    // INTERNALLY ROUTED TOKEN SIGNALS
-    .tok_req_valid(internal_tok_req_valid),
-    .tok_req_ready(internal_tok_req_ready),
-    .tok_resp_valid(internal_tok_resp_valid),
-    .tok_resp_ready(), // Ignored by internal allocator
-    .tok_resp_id(internal_tok_resp_id),
+    .tok_req_valid(link.tok_req_valid),
+    .tok_req_ready(tok_req_ready_reg),  // Intercepted tok_req_ready!
+
+    .tok_resp_valid(link.tok_resp_valid),
+    .tok_resp_ready(link.tok_resp_ready),
+    .tok_resp_id(link.tok_resp.token_id),
 
     .ord_valid(link.ord_valid),
     .ord_ready(link.ord_ready),

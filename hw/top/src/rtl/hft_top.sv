@@ -564,57 +564,39 @@ hft_top_system The_System (
         .rpt_filled_total   (rpt_filled_total_w)
 );
 
-	    // =========================================================
-    // Explicit OUCH Inbound Mapping (Fixes the SELL bug)
+	// OUCH modules
+
+	ouch_inbound u_ouch_inbound (
+    .clk               (CLOCK_50),
+    .rst_n             (KEY[0]),
+
+    //=== INPUT: Algorithm Block Commands ===
+		.algo_cmd_valid   (ord_valid_w),
+		.algo_cmd_ready   (ord_ready_w),                // Feeds back to algorithm
+		.algo_cmd_type    (ord_action_w - 2'd1),        // Translates 1/2 to 0/1
+		.algo_qty         (ord_qty_w),
+		.algo_side        ({1'b0, ord_side_w}),         // Pads 1-bit to 2-bit
+		.algo_symbol      ({48'd0, ord_symbol_id_w}),   // Pads 16-bit to 64-bit
+		.algo_price_ticks ({32'd0, ord_price_int_w}),   // Pads 32-bit to 64-bit
+		.algo_orig_ref    (ord_token_id_w),
+
+    // Avalon-ST Source
+    .st_data           (fifo_fpga_to_hps_in_data),
+    .st_valid          (fifo_fpga_to_hps_in_valid),
+    .st_ready          (fifo_fpga_to_hps_in_ready),
+    .st_startofpacket  (fifo_fpga_to_hps_in_sop),
+    .st_endofpacket    (fifo_fpga_to_hps_in_eop),
+    .st_empty          (fifo_fpga_to_hps_in_empty)
+	);
+
+	// =========================================================
+    // OUCH 5.0 Outbound Parser (Ingests Exchange Responses)
     // =========================================================
-    logic [1:0] ouch_in_cmd_type;
-    logic [1:0] ouch_in_side;
-
-    always_comb begin
-        // Map ACT_ENTER (2'b01) -> OUCH Add (0)
-        // Map ACT_CANCEL (2'b10) -> OUCH Cancel (1)
-        if (ord_action_w == 2'b01)   ouch_in_cmd_type = 2'b00;
-        else                         ouch_in_cmd_type = 2'b01;
-
-        // Map SIDE_BUY (1'b0) -> OUCH 'B' (0)
-        // Map SIDE_SELL (1'b1) -> OUCH 'S' (1)
-        if (ord_side_w == 1'b0)      ouch_in_side = 2'b00;
-        else                         ouch_in_side = 2'b01;
-    end
-
-    ouch_inbound u_ouch_inbound (
-        .clk               (CLOCK_50),
-        .rst_n             (KEY[0]),
-
-        .algo_cmd_valid    (ord_valid_w),
-        .algo_cmd_ready    (ord_ready_w),
-        .algo_cmd_type     (ouch_in_cmd_type),       // FIXED
-        .algo_qty          (ord_qty_w),
-        .algo_side         (ouch_in_side),           // FIXED
-        .algo_symbol       (64'h5350592020202020), 
-        .algo_price_ticks  ({32'd0, ord_price_int_w}),
-        .algo_orig_ref     (ord_token_id_w),
-
-        .st_data           (fifo_fpga_to_hps_in_data),
-        .st_valid          (fifo_fpga_to_hps_in_valid),
-        .st_ready          (fifo_fpga_to_hps_in_ready),
-        .st_startofpacket  (fifo_fpga_to_hps_in_sop),
-        .st_endofpacket    (fifo_fpga_to_hps_in_eop),
-        .st_empty          (fifo_fpga_to_hps_in_empty)
-    );
-
-    // =========================================================
-    // Explicit OUCH Outbound Mapping (Fixes the Cancel bug)
-    // =========================================================
-    logic        rpt_valid_raw;
-    logic [1:0]  ouch_msg_type_raw;
-    logic [31:0] rpt_token_id_raw;
-    logic [31:0] rpt_filled_total_raw;
-
     ouch_outbound u_ouch_outbound (
         .clk              (CLOCK_50),
         .rst_n            (KEY[0]),
 
+        // Avalon-ST Sink (From HPS/Exchange)
         .st_data          (fifo_ouch_ingress_out_data),
         .st_valid         (fifo_ouch_ingress_out_valid),
         .st_ready         (fifo_ouch_ingress_out_ready),
@@ -622,12 +604,14 @@ hft_top_system The_System (
         .st_endofpacket   (fifo_ouch_ingress_out_eop),
         .st_empty         (fifo_ouch_ingress_out_empty),
 
-        .algo_valid       (rpt_valid_raw),
-        .algo_msg_type    (ouch_msg_type_raw),      // 1=A, 2=C, 3=E
-        .algo_qty         (rpt_filled_total_raw),
-        .algo_userref     (rpt_token_id_raw),
+        // === OUTPUT TO ALGORITHM ===
+        .algo_valid       (rpt_valid_w),
+        .algo_msg_type    (rpt_kind_w),
+        .algo_order_ref   (rpt_token_id_w),
+        .algo_qty         (rpt_filled_total_w),
 
-        .algo_order_ref   (),
+        // Unused fields
+        .algo_userref     (),
         .algo_timestamp   (),
         .algo_price       (),
         .algo_symbol      (),
@@ -635,30 +619,6 @@ hft_top_system The_System (
         .algo_match_id    (),
         .algo_reason      ()
     );
-
-    // Convert raw OUCH integers back to hft_types_pkg Enums
-    always_comb begin
-        rpt_valid_w        = 1'b0;
-        rpt_kind_w         = 2'b10; // RPT_REJECT (Default)
-        rpt_token_id_w     = rpt_token_id_raw;
-        rpt_filled_total_w = rpt_filled_total_raw;
-
-        case (ouch_msg_type_raw)
-            2'd2: begin // 'C' -> Canceled
-                rpt_valid_w = rpt_valid_raw;
-                rpt_kind_w  = 2'b01; // RPT_CANCELED
-            end
-            2'd3: begin // 'E' -> Executed
-                rpt_valid_w = rpt_valid_raw;
-                rpt_kind_w  = 2'b00; // RPT_EXEC
-            end
-            default: begin
-                // Ignore 'A'ccepted messages so they don't break the FSM
-                rpt_valid_w = 1'b0; 
-                rpt_kind_w  = 2'b10; // RPT_REJECT
-            end
-        endcase
-    end
 
 // =========================================================
 // Optional: Keep your Debug Pins Alive for SignalTap

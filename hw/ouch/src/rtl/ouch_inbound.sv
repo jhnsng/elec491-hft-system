@@ -90,10 +90,11 @@ module ouch_inbound (
                 // FIXED: Divide by 256 to strip internal fractions, then multiply by 100 for OUCH spec!
                 fifo_mem[wr_ptr].price    <= (algo_price_ticks) * 100;
                 
-                // GOOD CODE: Trust the algorithm's token!
-                fifo_mem[wr_ptr].userref  <= algo_orig_ref; 
+                fifo_mem[wr_ptr].userref  <= (algo_cmd_type == 2'b00) ? userref_counter : algo_orig_ref;
                 
                 wr_ptr <= wr_ptr + 3'd1;
+                if (algo_cmd_type == 2'b00)
+                    userref_counter <= userref_counter + 32'd1;
             end
 
             if (push && !pop)      fifo_count <= fifo_count + 4'd1;
