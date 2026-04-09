@@ -17,7 +17,7 @@ package algo_cfg_pkg;
   // CHANGE THIS TO 3 or 5!
   // Since 1 unit = $0.01, a threshold of 3 means the momentum must 
   // clearly break out by 3 full cents before the FPGA pulls the trigger.
-  localparam logic signed [63:0] CROSS_THRESHOLD = 64'd3; 
+  localparam logic signed [63:0] CROSS_THRESHOLD = 64'd0; 
 
   
 

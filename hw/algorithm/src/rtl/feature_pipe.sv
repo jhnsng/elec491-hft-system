@@ -287,11 +287,11 @@ module feature_pipe (
       if (spr_ok_d17) begin
         if (cross_up_prev_d17 && cross_up_now_d17) begin
           sig_side <= SIDE_BUY; 
-          sig_price_int <= bb_p_d17; // FIX: Bid at the Best Bid!
+          sig_price_int <= ba_p_d17; // AGGRESSIVE TAKER: Buy at the Best Ask!
         end
         else if (cross_dn_prev_d17 && cross_dn_now_d17) begin
           sig_side <= SIDE_SELL; 
-          sig_price_int <= ba_p_d17; // FIX: Offer at the Best Ask!
+          sig_price_int <= bb_p_d17; // AGGRESSIVE TAKER: Hit the Best Bid!
         end
       end
     end
