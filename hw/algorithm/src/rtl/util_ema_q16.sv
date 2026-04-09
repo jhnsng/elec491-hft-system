@@ -10,7 +10,9 @@ module util_ema_q16 #(
 );
 
   logic signed [63:0] y_accum;
-  assign y_out = y_accum[63:16];      
+  //assign y_out = y_accum[63:16];      
+  // FIX: Explicitly replicate the 63rd bit 16 times, then attach the 48 bits
+  assign y_out = $signed({ {16{y_accum[63]}}, y_accum[63:16] });
 
   logic signed [63:0] x_scaled;
   assign x_scaled = {x_in[47:0], 16'd0}; 
