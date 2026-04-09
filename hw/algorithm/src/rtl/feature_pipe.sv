@@ -255,9 +255,9 @@ end
       sig_valid <= 1'b0; 
       sig_enter <= 1'b0; 
     end else begin
-      if (sig_ready) sig_valid <= 1'b0; 
+      if (sig_valid && sig_ready) sig_valid <= 0;
 
-      if (en_d17 && sig_ready) begin
+      if (en_d17 && !sig_valid) begin
         sig_valid <= 1'b1;
         sig_enter <= 1'b0;
 

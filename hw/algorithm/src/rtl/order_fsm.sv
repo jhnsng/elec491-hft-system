@@ -83,30 +83,35 @@ module order_fsm (
 
   
   // TIMEOUT LOGIC
-  localparam int CANCEL_TIMEOUT_CYCLES = 19_000_000;  // ~138ms @138MHz
+  localparam int HARD_KILL_TIMEOUT = 50_000_000;  
+  localparam int CANCEL_TIMEOUT_CYCLES = 20_000_000;  
   logic [24:0] age_cnt [MAX_OUT];  // 25 bits = 33M cycles max
   logic        timeout_fire;
   logic [3:0]  timeout_id;
+  logic [3:0] timeout_scan_ptr;
 
   logic out_full;
   assign out_full = !has_free;
 
   // TIMEOUT DETECTOR
+
   always_comb begin
-    timeout_fire = 1'b0;
-    timeout_id   = 4'd0;
-  
-    for (int i = 0; i < MAX_OUT; i++) begin
-      if (out_valid[i] && !out_tab[i].cancel_sent && 
-         (age_cnt[i] >= CANCEL_TIMEOUT_CYCLES)) begin
-          timeout_fire = 1'b1;
-          timeout_id   = i[3:0];
-          break;
-      end
+  timeout_fire = 1'b0;
+  timeout_id   = 4'd0;
+
+  for (int k = 0; k < MAX_OUT; k++) begin
+    int i = (timeout_scan_ptr + k) % MAX_OUT;
+
+    if (out_valid[i] && !out_tab[i].cancel_sent &&
+       (age_cnt[i] >= CANCEL_TIMEOUT_CYCLES)) begin
+        timeout_fire = 1'b1;
+        timeout_id   = i[3:0];
+        break;
     end
   end
+end
 
-  localparam int FULL_STUCK_CYCLES = 25_000_000;
+  localparam int FULL_STUCK_CYCLES = 10_000_000;
   logic [24:0] full_stuck_cnt;
   logic        force_recover;
   logic [3:0]  force_recover_id;
@@ -124,6 +129,22 @@ end
 
 assign force_recover = (full_stuck_cnt >= FULL_STUCK_CYCLES);
 
+logic hard_kill_fire;
+logic [3:0] hard_kill_id;
+
+always_comb begin
+  hard_kill_fire = 0;
+  hard_kill_id   = 0;
+
+  for (int i = 0; i < MAX_OUT; i++) begin
+    if (out_valid[i] && age_cnt[i] >= HARD_KILL_TIMEOUT) begin
+        hard_kill_fire = 1;
+        hard_kill_id   = i;
+        break;
+    end
+  end
+end
+
 always_comb begin
   force_recover_id = 4'd0;
   for (int i = 0; i < MAX_OUT; i++) begin
@@ -137,7 +158,7 @@ end
 
 
   // Input FIFO
-  localparam int FIFO_DEPTH = 16; // Increased to match MAX_OUT scale
+  localparam int FIFO_DEPTH = 2*MAX_OUT; // Increased to match MAX_OUT scale
   localparam int PTR_W      = $clog2(FIFO_DEPTH);
 
   intent_t i_mem [FIFO_DEPTH];
@@ -268,6 +289,7 @@ end
   logic load_slot_8, load_slot_9, load_slot_10, load_slot_11;
   logic load_slot_12, load_slot_13, load_slot_14, load_slot_15;
 
+
   logic entering_sendenter;
   assign entering_sendenter = (iss == ISS_WAITTOK) && tok_resp_ready_reg && tok_resp_valid;
 
@@ -277,6 +299,7 @@ end
   always_ff @(posedge clk) begin 
     if (!rst_n) begin
       for (int i = 0; i < MAX_OUT; i++) age_cnt[i] <= 25'd0;
+      timeout_scan_ptr <= 4'd0;
       free_i <= 4'd0; has_free <= 1'b0;
       i_wr <= '0; i_rd <= '0;
       i_head_valid <= 1'b0; i_read_mem_reg <= 1'b0;
@@ -294,6 +317,9 @@ end
       ord_valid <= 1'b0;
       skid_valid <= 1'b0;
       out_valid <= '0;
+      for (int i = 0; i < MAX_OUT; i++) begin
+        safe_token_id[i] <= 32'd0;
+      end
       load_slot_0 <= 1'b0; load_slot_1 <= 1'b0; load_slot_2 <= 1'b0; load_slot_3 <= 1'b0;
       load_slot_4 <= 1'b0; load_slot_5 <= 1'b0; load_slot_6 <= 1'b0; load_slot_7 <= 1'b0;
       load_slot_8 <= 1'b0; load_slot_9 <= 1'b0; load_slot_10 <= 1'b0; load_slot_11 <= 1'b0;
@@ -302,6 +328,7 @@ end
     end else begin
       free_i <= free_i_next;
       has_free <= has_free_next;
+      timeout_scan_ptr <= timeout_scan_ptr + 1'b1;
 
       if (sig_valid && sig_ready) i_wr <= i_wr + 1'b1;
 
@@ -318,11 +345,14 @@ end
       // AGE COUNTERS - ADD THIS (before do_enqueue_cancel_reg)
     for (int i = 0; i < MAX_OUT; i++) begin
       if (!out_valid[i]) begin
-        age_cnt[i] <= 25'd0;  // Reset when slot frees
-      end else if (age_cnt[i] < 25'h1F_FFFFF) begin
-        age_cnt[i] <= age_cnt[i] + 1'b1;  // Count up
+        age_cnt[i] <= 25'd0;
+      end
+      else if (!out_tab[i].cancel_sent) begin
+        if (age_cnt[i] < 25'h1F_FFFFF)
+          age_cnt[i] <= age_cnt[i] + 1'b1;
       end
     end
+
 
       // DELAY PIPELINE: Giving out_tab 1 full cycle to settle!
       rpt_valid_s0 <= rpt_valid;
@@ -339,12 +369,20 @@ end
       // MODIFIED
       do_enqueue_cancel_reg <= 1'b0;
 
-      if (rpt_valid_p1 && has_match_p1 && (rpt_p1.kind == RPT_EXEC)) begin
-        if (is_partial_fill_p1 && !match_data_p1.cancel_sent && !c_mem_full) do_enqueue_cancel_reg <= 1'b1;
-      end else if (timeout_fire && !c_mem_full) begin
-          do_enqueue_cancel_reg <= 1'b1;
-      end else if (force_recover && !c_mem_full) begin
-          do_enqueue_cancel_reg <= 1'b1;
+      if (!c_mem_full) begin
+
+        if (rpt_valid_p1 && has_match_p1 && (rpt_p1.kind == RPT_EXEC)) begin
+          if (is_partial_fill_p1 && !match_data_p1.cancel_sent)
+            do_enqueue_cancel_reg <= 1'b1;
+
+        end else if (timeout_fire && !out_tab[timeout_id].cancel_sent) begin
+            do_enqueue_cancel_reg <= 1'b1;
+
+        end else if (force_recover) begin
+            do_enqueue_cancel_reg <= 1'b1;
+
+        end
+
       end
 
       if (do_enqueue_cancel_reg) c_wr <= c_wr + 1'b1;
@@ -413,20 +451,44 @@ end
           if (free_i == 4'd15) out_valid[15] <= 1'b1;
       end
 
-      if (rpt_valid_p1) begin
-        for (int i = 0; i < MAX_OUT; i++) begin
-          if (token_match_p1[i]) begin
-            unique case (rpt_p1.kind)
-              RPT_EXEC: begin
-                if (is_complete_fill_p1) out_valid[i] <= 1'b0;
-              end
-              RPT_CANCELED: out_valid[i] <= 1'b0;
-              RPT_REJECT:   out_valid[i] <= 1'b0;
-              default: ;
-            endcase
+
+if (rpt_valid_p1) begin
+  for (int i = 0; i < MAX_OUT; i++) begin
+    if (token_match_p1[i]) begin
+      unique case (rpt_p1.kind)
+
+        RPT_EXEC: begin
+          if (is_complete_fill_p1) begin
+            out_valid[i] <= 1'b0;
+            safe_token_id[i] <= 32'd0;   // NEW
           end
         end
+
+        RPT_CANCELED: begin
+          out_valid[i] <= 1'b0;
+          safe_token_id[i] <= 32'd0;   // NEW
+        end
+
+        RPT_REJECT: begin
+          out_valid[i] <= 1'b0;
+          safe_token_id[i] <= 32'd0;   // NEW
+        end
+
+      endcase
+    end
+  end
+end
+
+      if (hard_kill_fire) begin
+        out_valid[hard_kill_id] <= 1'b0;
+        safe_token_id[hard_kill_id] <= 32'd0;
       end
+
+      if (force_recover) begin
+        out_valid[force_recover_id] <= 1'b0;
+        safe_token_id[force_recover_id] <= 32'd0;
+      end
+
     end
   end
 
@@ -543,22 +605,22 @@ end
        skid_data <= shadow_reg;
     end
 
-    if (load_slot_0)  begin out_tab[0].symbol_id  <= pend_intent.symbol_id; out_tab[0].token_id  <= pend_token; safe_token_id[0]  <= pend_token; out_tab[0].side  <= pend_intent.side; out_tab[0].price  <= pend_intent.price; out_tab[0].qty  <= pend_intent.qty; out_tab[0].filled_tot  <= 32'd0; out_tab[0].cancel_sent  <= 1'b0; end
-    if (load_slot_1)  begin out_tab[1].symbol_id  <= pend_intent.symbol_id; out_tab[1].token_id  <= pend_token; safe_token_id[1]  <= pend_token; out_tab[1].side  <= pend_intent.side; out_tab[1].price  <= pend_intent.price; out_tab[1].qty  <= pend_intent.qty; out_tab[1].filled_tot  <= 32'd0; out_tab[1].cancel_sent  <= 1'b0; end
-    if (load_slot_2)  begin out_tab[2].symbol_id  <= pend_intent.symbol_id; out_tab[2].token_id  <= pend_token; safe_token_id[2]  <= pend_token; out_tab[2].side  <= pend_intent.side; out_tab[2].price  <= pend_intent.price; out_tab[2].qty  <= pend_intent.qty; out_tab[2].filled_tot  <= 32'd0; out_tab[2].cancel_sent  <= 1'b0; end
-    if (load_slot_3)  begin out_tab[3].symbol_id  <= pend_intent.symbol_id; out_tab[3].token_id  <= pend_token; safe_token_id[3]  <= pend_token; out_tab[3].side  <= pend_intent.side; out_tab[3].price  <= pend_intent.price; out_tab[3].qty  <= pend_intent.qty; out_tab[3].filled_tot  <= 32'd0; out_tab[3].cancel_sent  <= 1'b0; end
-    if (load_slot_4)  begin out_tab[4].symbol_id  <= pend_intent.symbol_id; out_tab[4].token_id  <= pend_token; safe_token_id[4]  <= pend_token; out_tab[4].side  <= pend_intent.side; out_tab[4].price  <= pend_intent.price; out_tab[4].qty  <= pend_intent.qty; out_tab[4].filled_tot  <= 32'd0; out_tab[4].cancel_sent  <= 1'b0; end
-    if (load_slot_5)  begin out_tab[5].symbol_id  <= pend_intent.symbol_id; out_tab[5].token_id  <= pend_token; safe_token_id[5]  <= pend_token; out_tab[5].side  <= pend_intent.side; out_tab[5].price  <= pend_intent.price; out_tab[5].qty  <= pend_intent.qty; out_tab[5].filled_tot  <= 32'd0; out_tab[5].cancel_sent  <= 1'b0; end
-    if (load_slot_6)  begin out_tab[6].symbol_id  <= pend_intent.symbol_id; out_tab[6].token_id  <= pend_token; safe_token_id[6]  <= pend_token; out_tab[6].side  <= pend_intent.side; out_tab[6].price  <= pend_intent.price; out_tab[6].qty  <= pend_intent.qty; out_tab[6].filled_tot  <= 32'd0; out_tab[6].cancel_sent  <= 1'b0; end
-    if (load_slot_7)  begin out_tab[7].symbol_id  <= pend_intent.symbol_id; out_tab[7].token_id  <= pend_token; safe_token_id[7]  <= pend_token; out_tab[7].side  <= pend_intent.side; out_tab[7].price  <= pend_intent.price; out_tab[7].qty  <= pend_intent.qty; out_tab[7].filled_tot  <= 32'd0; out_tab[7].cancel_sent  <= 1'b0; end
-    if (load_slot_8)  begin out_tab[8].symbol_id  <= pend_intent.symbol_id; out_tab[8].token_id  <= pend_token; safe_token_id[8]  <= pend_token; out_tab[8].side  <= pend_intent.side; out_tab[8].price  <= pend_intent.price; out_tab[8].qty  <= pend_intent.qty; out_tab[8].filled_tot  <= 32'd0; out_tab[8].cancel_sent  <= 1'b0; end
-    if (load_slot_9)  begin out_tab[9].symbol_id  <= pend_intent.symbol_id; out_tab[9].token_id  <= pend_token; safe_token_id[9]  <= pend_token; out_tab[9].side  <= pend_intent.side; out_tab[9].price  <= pend_intent.price; out_tab[9].qty  <= pend_intent.qty; out_tab[9].filled_tot  <= 32'd0; out_tab[9].cancel_sent  <= 1'b0; end
-    if (load_slot_10) begin out_tab[10].symbol_id <= pend_intent.symbol_id; out_tab[10].token_id <= pend_token; safe_token_id[10] <= pend_token; out_tab[10].side <= pend_intent.side; out_tab[10].price <= pend_intent.price; out_tab[10].qty <= pend_intent.qty; out_tab[10].filled_tot <= 32'd0; out_tab[10].cancel_sent <= 1'b0; end
-    if (load_slot_11) begin out_tab[11].symbol_id <= pend_intent.symbol_id; out_tab[11].token_id <= pend_token; safe_token_id[11] <= pend_token; out_tab[11].side <= pend_intent.side; out_tab[11].price <= pend_intent.price; out_tab[11].qty <= pend_intent.qty; out_tab[11].filled_tot <= 32'd0; out_tab[11].cancel_sent <= 1'b0; end
-    if (load_slot_12) begin out_tab[12].symbol_id <= pend_intent.symbol_id; out_tab[12].token_id <= pend_token; safe_token_id[12] <= pend_token; out_tab[12].side <= pend_intent.side; out_tab[12].price <= pend_intent.price; out_tab[12].qty <= pend_intent.qty; out_tab[12].filled_tot <= 32'd0; out_tab[12].cancel_sent <= 1'b0; end
-    if (load_slot_13) begin out_tab[13].symbol_id <= pend_intent.symbol_id; out_tab[13].token_id <= pend_token; safe_token_id[13] <= pend_token; out_tab[13].side <= pend_intent.side; out_tab[13].price <= pend_intent.price; out_tab[13].qty <= pend_intent.qty; out_tab[13].filled_tot <= 32'd0; out_tab[13].cancel_sent <= 1'b0; end
-    if (load_slot_14) begin out_tab[14].symbol_id <= pend_intent.symbol_id; out_tab[14].token_id <= pend_token; safe_token_id[14] <= pend_token; out_tab[14].side <= pend_intent.side; out_tab[14].price <= pend_intent.price; out_tab[14].qty <= pend_intent.qty; out_tab[14].filled_tot <= 32'd0; out_tab[14].cancel_sent <= 1'b0; end
-    if (load_slot_15) begin out_tab[15].symbol_id <= pend_intent.symbol_id; out_tab[15].token_id <= pend_token; safe_token_id[15] <= pend_token; out_tab[15].side <= pend_intent.side; out_tab[15].price <= pend_intent.price; out_tab[15].qty <= pend_intent.qty; out_tab[15].filled_tot <= 32'd0; out_tab[15].cancel_sent <= 1'b0; end
+    if (load_slot_0)  begin out_tab[0].symbol_id  <= pend_intent.symbol_id; out_tab[0].token_id  <= pend_token; safe_token_id[0]  <= pend_token; out_tab[0].side  <= pend_intent.side; out_tab[0].price  <= pend_intent.price; out_tab[0].qty  <= pend_intent.qty; out_tab[0].filled_tot  <= 32'd0; out_tab[0].cancel_sent  <= 1'b0; age_cnt[0] <= 25'd0; end
+    if (load_slot_1)  begin out_tab[1].symbol_id  <= pend_intent.symbol_id; out_tab[1].token_id  <= pend_token; safe_token_id[1]  <= pend_token; out_tab[1].side  <= pend_intent.side; out_tab[1].price  <= pend_intent.price; out_tab[1].qty  <= pend_intent.qty; out_tab[1].filled_tot  <= 32'd0; out_tab[1].cancel_sent  <= 1'b0; age_cnt[1] <= 25'd0;end
+    if (load_slot_2)  begin out_tab[2].symbol_id  <= pend_intent.symbol_id; out_tab[2].token_id  <= pend_token; safe_token_id[2]  <= pend_token; out_tab[2].side  <= pend_intent.side; out_tab[2].price  <= pend_intent.price; out_tab[2].qty  <= pend_intent.qty; out_tab[2].filled_tot  <= 32'd0; out_tab[2].cancel_sent  <= 1'b0; age_cnt[2] <= 25'd0;end
+    if (load_slot_3)  begin out_tab[3].symbol_id  <= pend_intent.symbol_id; out_tab[3].token_id  <= pend_token; safe_token_id[3]  <= pend_token; out_tab[3].side  <= pend_intent.side; out_tab[3].price  <= pend_intent.price; out_tab[3].qty  <= pend_intent.qty; out_tab[3].filled_tot  <= 32'd0; out_tab[3].cancel_sent  <= 1'b0; age_cnt[3] <= 25'd0;end
+    if (load_slot_4)  begin out_tab[4].symbol_id  <= pend_intent.symbol_id; out_tab[4].token_id  <= pend_token; safe_token_id[4]  <= pend_token; out_tab[4].side  <= pend_intent.side; out_tab[4].price  <= pend_intent.price; out_tab[4].qty  <= pend_intent.qty; out_tab[4].filled_tot  <= 32'd0; out_tab[4].cancel_sent  <= 1'b0; age_cnt[4] <= 25'd0;end
+    if (load_slot_5)  begin out_tab[5].symbol_id  <= pend_intent.symbol_id; out_tab[5].token_id  <= pend_token; safe_token_id[5]  <= pend_token; out_tab[5].side  <= pend_intent.side; out_tab[5].price  <= pend_intent.price; out_tab[5].qty  <= pend_intent.qty; out_tab[5].filled_tot  <= 32'd0; out_tab[5].cancel_sent  <= 1'b0; age_cnt[5] <= 25'd0;end
+    if (load_slot_6)  begin out_tab[6].symbol_id  <= pend_intent.symbol_id; out_tab[6].token_id  <= pend_token; safe_token_id[6]  <= pend_token; out_tab[6].side  <= pend_intent.side; out_tab[6].price  <= pend_intent.price; out_tab[6].qty  <= pend_intent.qty; out_tab[6].filled_tot  <= 32'd0; out_tab[6].cancel_sent  <= 1'b0; age_cnt[6] <= 25'd0;end
+    if (load_slot_7)  begin out_tab[7].symbol_id  <= pend_intent.symbol_id; out_tab[7].token_id  <= pend_token; safe_token_id[7]  <= pend_token; out_tab[7].side  <= pend_intent.side; out_tab[7].price  <= pend_intent.price; out_tab[7].qty  <= pend_intent.qty; out_tab[7].filled_tot  <= 32'd0; out_tab[7].cancel_sent  <= 1'b0; age_cnt[7] <= 25'd0;end
+    if (load_slot_8)  begin out_tab[8].symbol_id  <= pend_intent.symbol_id; out_tab[8].token_id  <= pend_token; safe_token_id[8]  <= pend_token; out_tab[8].side  <= pend_intent.side; out_tab[8].price  <= pend_intent.price; out_tab[8].qty  <= pend_intent.qty; out_tab[8].filled_tot  <= 32'd0; out_tab[8].cancel_sent  <= 1'b0; age_cnt[8] <= 25'd0;end
+    if (load_slot_9)  begin out_tab[9].symbol_id  <= pend_intent.symbol_id; out_tab[9].token_id  <= pend_token; safe_token_id[9]  <= pend_token; out_tab[9].side  <= pend_intent.side; out_tab[9].price  <= pend_intent.price; out_tab[9].qty  <= pend_intent.qty; out_tab[9].filled_tot  <= 32'd0; out_tab[9].cancel_sent  <= 1'b0; age_cnt[9] <= 25'd0;end
+    if (load_slot_10) begin out_tab[10].symbol_id <= pend_intent.symbol_id; out_tab[10].token_id <= pend_token; safe_token_id[10] <= pend_token; out_tab[10].side <= pend_intent.side; out_tab[10].price <= pend_intent.price; out_tab[10].qty <= pend_intent.qty; out_tab[10].filled_tot <= 32'd0; out_tab[10].cancel_sent <= 1'b0; age_cnt[10] <= 25'd0;end
+    if (load_slot_11) begin out_tab[11].symbol_id <= pend_intent.symbol_id; out_tab[11].token_id <= pend_token; safe_token_id[11] <= pend_token; out_tab[11].side <= pend_intent.side; out_tab[11].price <= pend_intent.price; out_tab[11].qty <= pend_intent.qty; out_tab[11].filled_tot <= 32'd0; out_tab[11].cancel_sent <= 1'b0; age_cnt[11] <= 25'd0;end
+    if (load_slot_12) begin out_tab[12].symbol_id <= pend_intent.symbol_id; out_tab[12].token_id <= pend_token; safe_token_id[12] <= pend_token; out_tab[12].side <= pend_intent.side; out_tab[12].price <= pend_intent.price; out_tab[12].qty <= pend_intent.qty; out_tab[12].filled_tot <= 32'd0; out_tab[12].cancel_sent <= 1'b0; age_cnt[12] <= 25'd0; end
+    if (load_slot_13) begin out_tab[13].symbol_id <= pend_intent.symbol_id; out_tab[13].token_id <= pend_token; safe_token_id[13] <= pend_token; out_tab[13].side <= pend_intent.side; out_tab[13].price <= pend_intent.price; out_tab[13].qty <= pend_intent.qty; out_tab[13].filled_tot <= 32'd0; out_tab[13].cancel_sent <= 1'b0; age_cnt[13] <= 25'd0; end
+    if (load_slot_14) begin out_tab[14].symbol_id <= pend_intent.symbol_id; out_tab[14].token_id <= pend_token; safe_token_id[14] <= pend_token; out_tab[14].side <= pend_intent.side; out_tab[14].price <= pend_intent.price; out_tab[14].qty <= pend_intent.qty; out_tab[14].filled_tot <= 32'd0; out_tab[14].cancel_sent <= 1'b0; age_cnt[14] <= 25'd0; end
+    if (load_slot_15) begin out_tab[15].symbol_id <= pend_intent.symbol_id; out_tab[15].token_id <= pend_token; safe_token_id[15] <= pend_token; out_tab[15].side <= pend_intent.side; out_tab[15].price <= pend_intent.price; out_tab[15].qty <= pend_intent.qty; out_tab[15].filled_tot <= 32'd0; out_tab[15].cancel_sent <= 1'b0; age_cnt[15] <= 25'd0; end
 
     if (rpt_valid_p1) begin
       for (int i = 0; i < MAX_OUT; i++) begin
@@ -574,6 +636,9 @@ end
     // ADD THIS at very end of BLOCK 2 always_ff
 if (timeout_fire && !c_mem_full) begin
   out_tab[timeout_id].cancel_sent <= 1'b1;  // Prevent double-cancel
+end
+if (force_recover && !c_mem_full) begin
+  out_tab[force_recover_id].cancel_sent <= 1'b1;
 end
   end
 
