@@ -342,16 +342,15 @@ module order_fsm (
         timeout_id_reg <= timeout_id;
       end
 
-      if (rpt_valid_p1 && has_match_p1 && (rpt_p1.kind == RPT_EXEC)) begin
-        // FIX: Use aligned p1 data directly!
-        if ((rpt_p1.filled_total < match_data_p1.qty) && !match_data_p1.cancel_sent && !c_mem_full) begin
-          do_enqueue_cancel_reg <= 1'b1;
-        end
-      end else if (timeout_fire && !c_mem_full) begin
-        // NEW: Trigger cancel from the timeout!
-        do_enqueue_cancel_reg <= 1'b1;
-        is_timeout_cancel_reg <= 1'b1;
-      end
+if (rpt_valid_p1 && has_match_p1 && (rpt_p1.kind == RPT_EXEC)) begin
+  if ((rpt_p1.filled_total < match_data_p1.qty) && 
+      !match_data_p1.cancel_sent && !c_mem_full) begin
+    do_enqueue_cancel_reg <= 1'b1;
+  end
+end else if (timeout_fire && !c_mem_full) begin
+  do_enqueue_cancel_reg <= 1'b1;
+  is_timeout_cancel_reg <= 1'b1;
+end
 
       ///////
 
@@ -422,26 +421,26 @@ module order_fsm (
       end
 
 
-      // 2. CLEAR SLOTS ON CANCELS / REJECTS / FULL EXECUTION
-      if (rpt_valid_p1) begin
-        for (int i = 0; i < MAX_OUT; i++) begin
-          if (token_match_p1[i]) begin
-            unique case (rpt_p1.kind)
-              RPT_EXEC: begin
-                out_tab[i].filled_qty <= out_tab[i].filled_qty + rpt_p1.filled_this_exec;
-                // OUCH doesn't send filled_total, so accumulate it ourselves!
-                if ((out_tab[i].filled_qty + rpt_p1.filled_this_exec) >= match_data_p1.qty) begin
-                  out_valid[i] <= 1'b0; // FREE THE SLOT!
-                end
-              end
-              RPT_CANCELED, RPT_REJECT: begin
-                out_valid[i] <= 1'b0; // Just free the slot!
-              end
-              default: ;
-            endcase
+if (rpt_valid_p1) begin
+  for (int i = 0; i < MAX_OUT; i++) begin
+    if (token_match_p1[i]) begin
+      unique case (rpt_p1.kind)
+        RPT_EXEC: begin
+          out_tab[i].filled_tot <= rpt_p1.filled_total;
+          if (rpt_p1.filled_total >= match_data_p1.qty) begin
+            out_valid[i] <= 1'b0;  // FREE SLOT ON FULL FILL
           end
         end
-      end
+        
+        RPT_CANCELED, RPT_REJECT: begin
+          out_valid[i] <= 1'b0;  // FREE SLOT ON CANCEL/REJECT
+        end
+        
+        default: ;
+      endcase
+    end
+  end
+end
     end
   end
 
@@ -577,19 +576,20 @@ module order_fsm (
     if (load_slot_14) begin out_tab[14].symbol_id <= pend_intent.symbol_id; out_tab[14].token_id <= pend_token; safe_token_id[14] <= pend_token; out_tab[14].side <= pend_intent.side; out_tab[14].price <= pend_intent.price; out_tab[14].qty <= pend_intent.qty; out_tab[14].filled_tot <= 32'd0; out_tab[14].cancel_sent <= 1'b0; end
     if (load_slot_15) begin out_tab[15].symbol_id <= pend_intent.symbol_id; out_tab[15].token_id <= pend_token; safe_token_id[15] <= pend_token; out_tab[15].side <= pend_intent.side; out_tab[15].price <= pend_intent.price; out_tab[15].qty <= pend_intent.qty; out_tab[15].filled_tot <= 32'd0; out_tab[15].cancel_sent <= 1'b0; end
 
-    if (rpt_valid_p1) begin
-      for (int i = 0; i < MAX_OUT; i++) begin
-        if (token_match_p1[i]) begin
-          out_tab[i].filled_tot <= rpt_p1.filled_total;
-          
-        // FIX: Use the perfectly aligned p1 data directly!
-        if (rpt_p1.kind == RPT_EXEC && (rpt_p1.filled_total < match_data_p1.qty) && !out_tab[i].cancel_sent && !c_mem_full) begin
-            out_tab[i].cancel_sent <= 1'b1;
-        end
-          
-        end
+if (rpt_valid_p1) begin
+  for (int i = 0; i < MAX_OUT; i++) begin
+    if (token_match_p1[i]) begin
+      out_tab[i].filled_tot <= rpt_p1.filled_total;
+      
+      // Mark partial fills for cancel (don't double-cancel)
+      if (rpt_p1.kind == RPT_EXEC && 
+          (rpt_p1.filled_total < match_data_p1.qty) && 
+          !out_tab[i].cancel_sent && !c_mem_full) begin
+        out_tab[i].cancel_sent <= 1'b1;
       end
     end
+  end
+end
 
     // NEW: Mark the timed-out order so we don't spam cancels for it
     if (timeout_fire && !c_mem_full) begin // FIX: Use immediate comb trigger
