@@ -98,9 +98,10 @@ module order_fsm (
   always_comb begin
   timeout_fire = 1'b0;
   timeout_id   = 4'd0;
+  int i;
 
   for (int k = 0; k < MAX_OUT; k++) begin
-    int i = (timeout_scan_ptr + k) % MAX_OUT;
+    i = (timeout_scan_ptr + k) % MAX_OUT;
 
     if (out_valid[i] && !out_tab[i].cancel_sent &&
        (age_cnt[i] >= CANCEL_TIMEOUT_CYCLES)) begin
