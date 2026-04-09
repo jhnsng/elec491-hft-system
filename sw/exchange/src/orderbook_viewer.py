@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Live HFT Trading System Dashboard Viewer")
+    parser = argparse.ArgumentParser(description="Live HFT System Dashboard Viewer")
     parser.add_argument(
         "--snapshot-path",
         type=Path,
@@ -66,7 +66,7 @@ class OuchDashboardViewer:
 
         self.app = QtWidgets.QApplication(sys.argv)
         self.window = QtWidgets.QMainWindow()
-        self.window.setWindowTitle("HFT Trading System LiveStats")
+        self.window.setWindowTitle("HFT System LiveStats")
         self.window.resize(1200, 820)
 
         root = QtWidgets.QWidget()
