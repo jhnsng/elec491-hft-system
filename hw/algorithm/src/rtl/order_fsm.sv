@@ -428,8 +428,11 @@ module order_fsm (
           if (token_match_p1[i]) begin
             unique case (rpt_p1.kind)
               RPT_EXEC: begin
-                // FIX: Use the perfectly aligned p1 data!
-                if (rpt_p1.filled_total >= match_data_p1.qty) out_valid[i] <= 1'b0;
+                out_tab[i].filled_qty <= out_tab[i].filled_qty + rpt_p1.filled_this_exec;
+                // OUCH doesn't send filled_total, so accumulate it ourselves!
+                if ((out_tab[i].filled_qty + rpt_p1.filled_this_exec) >= match_data_p1.qty) begin
+                  out_valid[i] <= 1'b0; // FREE THE SLOT!
+                end
               end
               RPT_CANCELED, RPT_REJECT: begin
                 out_valid[i] <= 1'b0; // Just free the slot!
